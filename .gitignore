@@ -22,3 +22,5 @@ Thumbs.db
 *.sqlite
 *.db
 products_initial.json
+
+*.xlsx

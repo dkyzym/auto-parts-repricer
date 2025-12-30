@@ -3,22 +3,38 @@ import ExcelJS from 'exceljs';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
-// В ESM (NodeNext) обязательно указывать расширение .js при импорте локальных файлов
 import db, { initDb } from './database.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Настройка для ESM __dirname
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// ОПРЕДЕЛЕНИЕ ПУТЕЙ
+const PROJECT_ROOT = process.cwd();
+const PUBLIC_DIR = path.join(PROJECT_ROOT, 'public');
+const EXPORTS_DIR = path.join(PUBLIC_DIR, 'exports');
 
-// Раздача статики (например, для скачивания файлов)
-app.use('/exports', express.static(path.join(__dirname, '../public/exports')));
+// Гарантируем, что папка для экспорта существует
+if (!fs.existsSync(EXPORTS_DIR)) {
+  fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+}
 
-// Инициализация БД
+// Раздача статики
+app.use('/exports', express.static(EXPORTS_DIR));
+
+// --- ВАЖНО: Настройка для поиска без учета регистра (Кириллица) ---
+// SQLite по умолчанию не умеет делать lower() для русских букв.
+// Мы регистрируем свою JS-функцию внутри SQL движка.
+try {
+  db.function('lower', { deterministic: true }, (text: unknown) => {
+    if (typeof text === 'string') return text.toLowerCase();
+    return text;
+  });
+} catch (err) {
+  // Функция может быть уже объявлена, игнорируем ошибку
+  console.log('SQLite function registration skipped or failed:', err);
+}
+
 initDb();
 
 // --- API ROUTES ---
@@ -26,9 +42,12 @@ initDb();
 // 1. SEED (Загрузка данных)
 app.post('/api/seed', (req, res) => {
   try {
-    const rawData = JSON.parse(
-      fs.readFileSync('products_initial.json', 'utf-8')
-    );
+    const jsonPath = path.join(PROJECT_ROOT, 'products_initial.json');
+    if (!fs.existsSync(jsonPath)) {
+      throw new Error(`Файл ${jsonPath} не найден`);
+    }
+
+    const rawData = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
 
     const insert = db.prepare(`
       INSERT OR REPLACE INTO products (sku, name, stock, costPrice, currentPrice, salesQty, abcMargin, marginTotal, sourceStatus)
@@ -36,9 +55,7 @@ app.post('/api/seed', (req, res) => {
     `);
 
     const insertMany = db.transaction((products: any[]) => {
-      // Очищаем таблицу перед загрузкой (опционально, но полезно для seed)
       db.prepare('DELETE FROM products').run();
-
       for (const p of products) {
         if (p.stock <= 0 || p.sourceStatus === 'ABC_Only') continue;
         insert.run(p);
@@ -48,60 +65,57 @@ app.post('/api/seed', (req, res) => {
     insertMany(rawData);
     res.json({ success: true, message: 'Database seeded successfully' });
   } catch (err) {
-    console.error(err);
+    console.error('Seed Error:', err);
     res
       .status(500)
       .json({ error: 'Seed failed', details: (err as Error).message });
   }
 });
 
-// 2. GET PRODUCTS (С пагинацией и подсчетом total)
+// 2. GET PRODUCTS (С пагинацией и мульти-словным поиском)
 app.get('/api/products', (req, res) => {
   const { page = 1, limit = 50, status = 'pending', q = '' } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
 
-  // Базовое условие
   let whereClause = 'WHERE 1=1';
   const params: any[] = [];
 
-  // Фильтры
   if (status !== 'all') {
     whereClause += ` AND status = ?`;
     params.push(status);
   }
 
+  // Обновленная логика поиска: разбиваем запрос на части (слова)
+  // Каждая часть должна присутствовать либо в SKU, либо в Названии
   if (q) {
-    whereClause += ` AND (sku LIKE ? OR name LIKE ?)`;
-    params.push(`%${q}%`, `%${q}%`);
+    const terms = String(q).trim().split(/\s+/); // Разбиваем по пробелам
+    for (const term of terms) {
+      if (term) {
+        whereClause += ` AND (LOWER(sku) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?))`;
+        params.push(`%${term}%`, `%${term}%`);
+      }
+    }
   }
 
-  // 1. Запрос данных
+  // SQL для данных
   const dataSql = `
     SELECT *, 
     (currentPrice * 0.05 * (salesQty / 365.0)) as daily_loss 
     FROM products 
     ${whereClause}
     ORDER BY 
-      CASE abcMargin 
-        WHEN 'A' THEN 1 
-        WHEN 'B' THEN 2 
-        WHEN 'C' THEN 3 
-        ELSE 4 
-      END ASC,
+      CASE abcMargin WHEN 'A' THEN 1 WHEN 'B' THEN 2 WHEN 'C' THEN 3 ELSE 4 END ASC,
       daily_loss DESC
     LIMIT ? OFFSET ?
   `;
 
-  // 2. Запрос общего количества (для пагинации)
+  // SQL для подсчета общего количества
   const countSql = `SELECT COUNT(*) as total FROM products ${whereClause}`;
 
   try {
-    // Получаем общее кол-во
     const totalResult = db.prepare(countSql).get(...params) as {
       total: number;
     };
-
-    // Получаем данные (добавляем limit/offset в параметры)
     const rows = db.prepare(dataSql).all(...params, Number(limit), offset);
 
     res.json({
@@ -145,60 +159,45 @@ app.patch('/api/products/:sku', (req, res) => {
     const sql = `UPDATE products SET ${updates.join(', ')} WHERE sku = ?`;
     db.prepare(sql).run(...params);
   }
-
   res.json({ success: true });
 });
 
 // 4. CREATE BATCH (Excel Export)
 app.post('/api/batches/create', async (req, res) => {
   try {
-    // 1. Находим все товары со статусом 'approved'
     const products = db
-      .prepare(
-        `
-      SELECT sku, name, stock, costPrice, currentPrice, new_price 
-      FROM products 
-      WHERE status = 'approved'
-    `
-      )
+      .prepare(`SELECT * FROM products WHERE status = 'approved'`)
       .all() as any[];
 
     if (products.length === 0) {
       res.status(400).json({ error: 'Нет одобренных товаров для экспорта' });
-      return; // Важно прервать выполнение
+      return;
     }
 
-    // 2. Создаем Excel файл
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Export');
 
     worksheet.columns = [
       { header: 'SKU', key: 'sku', width: 15 },
-      { header: 'Наименование', key: 'name', width: 40 },
-      { header: 'Остаток', key: 'stock', width: 10 },
-      { header: 'Закуп', key: 'costPrice', width: 15 },
+      { header: 'Наименование', key: 'name', width: 50 },
       { header: 'Старая цена', key: 'currentPrice', width: 15 },
       { header: 'Новая цена', key: 'new_price', width: 15 },
     ];
 
     worksheet.addRows(products);
 
-    // 3. Сохраняем файл
     const batchId = Date.now();
-    const dir = path.join(__dirname, '../public/exports');
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
     const filename = `batch_${batchId}.xlsx`;
-    await workbook.xlsx.writeFile(path.join(dir, filename));
+    const filePath = path.join(EXPORTS_DIR, filename);
 
-    // 4. Обновляем статус товаров на 'exported'
+    await workbook.xlsx.writeFile(filePath);
+
     const update = db.prepare(
-      "UPDATE products SET status = 'exported' WHERE sku = ?"
+      "UPDATE products SET status = 'exported', batch_id = ? WHERE sku = ?"
     );
     const updateMany = db.transaction((items: any[]) => {
       for (const item of items) {
-        update.run(item.sku);
+        update.run(batchId, item.sku);
       }
     });
     updateMany(products);
@@ -207,7 +206,7 @@ app.post('/api/batches/create', async (req, res) => {
       success: true,
       batch_id: batchId,
       count: products.length,
-      downloadUrl: `/exports/${filename}`,
+      downloadUrl: `/api/download/${filename}`,
     });
   } catch (err) {
     console.error('Export error:', err);
@@ -217,6 +216,56 @@ app.post('/api/batches/create', async (req, res) => {
   }
 });
 
+// 5. DOWNLOAD FILE
+app.get('/api/download/:filename', (req, res) => {
+  const filename = req.params.filename;
+  const safeFilename = path.basename(filename);
+  const filePath = path.join(EXPORTS_DIR, safeFilename);
+
+  if (fs.existsSync(filePath)) {
+    res.download(filePath, safeFilename, (err) => {
+      if (err) {
+        console.error('Download error:', err);
+        if (!res.headersSent) res.status(500).send('Error downloading file');
+      }
+    });
+  } else {
+    res.status(404).json({ error: 'File not found' });
+  }
+});
+
+// 6. GET BATCHES HISTORY
+app.get('/api/batches', (req, res) => {
+  try {
+    if (!fs.existsSync(EXPORTS_DIR)) return res.json([]);
+
+    const files = fs
+      .readdirSync(EXPORTS_DIR)
+      .filter((f) => f.endsWith('.xlsx'));
+    const batches = files
+      .map((f) => {
+        const stats = fs.statSync(path.join(EXPORTS_DIR, f));
+        const match = f.match(/batch_(\d+)\.xlsx/);
+        const timestamp = match ? parseInt(match[1]) : stats.mtimeMs;
+
+        return {
+          id: f,
+          name: f,
+          date: new Date(timestamp).toISOString(),
+          size: stats.size,
+          url: `/api/download/${f}`,
+        };
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    res.json(batches);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to list batches' });
+  }
+});
+
 app.listen(3001, () => {
   console.log('Server running on http://localhost:3001');
+  console.log('Exports directory:', EXPORTS_DIR);
 });

@@ -1,7 +1,9 @@
 import {
   ArrowUpRight,
   CheckCircle2,
+  Clock,
   Database,
+  Download,
   EyeOff,
   FileSpreadsheet,
   Flag,
@@ -9,10 +11,11 @@ import {
   RefreshCw,
   Search,
   Undo2,
+  X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-// --- ТИПЫ ДАННЫХ ---
+// --- ТИПЫ И ИНТЕРФЕЙСЫ ---
 
 interface Product {
   sku: string;
@@ -28,18 +31,19 @@ interface Product {
   status: 'pending' | 'approved' | 'deferred' | 'exported';
   manual_flag: boolean;
   daily_loss?: number;
+  batch_id?: number; // ID выгрузки, если товар в архиве
 }
 
-interface ApiResponse {
-  data: Product[];
-  meta: {
-    total: number;
-    page: number;
-    limit: number;
-  };
+interface BatchFile {
+  id: string;
+  name: string;
+  date: string;
+  size: number;
+  url: string;
 }
 
-// --- ЛОГИКА ОКРУГЛЕНИЯ ---
+// --- УТИЛИТЫ ---
+
 class PriceCalculator {
   private static MARKUP_BASE = 1.06;
 
@@ -75,6 +79,8 @@ class PriceCalculator {
   }
 }
 
+// --- SUB-COMPONENTS ---
+
 const Badge = ({
   children,
   color,
@@ -88,10 +94,168 @@ const Badge = ({
   </span>
 );
 
+const HistoryModal = ({ onClose }: { onClose: () => void }) => {
+  const [batches, setBatches] = useState<BatchFile[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/batches')
+      .then((res) => res.json())
+      .then((data) => setBatches(data))
+      .catch((err) => console.error(err))
+      .finally(() => setLoading(false));
+  }, []);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center backdrop-blur-sm p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+        <div className="p-4 border-b flex items-center justify-between bg-gray-50 rounded-t-xl">
+          <h2 className="text-xl font-bold flex items-center gap-2 text-gray-800">
+            <Clock className="text-blue-600" /> История выгрузок
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-gray-200 rounded-full transition-colors">
+            <X size={20} className="text-gray-500" />
+          </button>
+        </div>
+        <div className="overflow-y-auto flex-1 p-0">
+          {loading ? (
+            <div className="flex justify-center py-12">
+              <Loader2 className="animate-spin text-blue-500" size={32} />
+            </div>
+          ) : batches.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">История пуста</div>
+          ) : (
+            <table className="w-full text-left border-collapse">
+              <thead className="bg-gray-100 text-gray-600 text-sm sticky top-0">
+                <tr>
+                  <th className="p-4 font-semibold">Дата создания</th>
+                  <th className="p-4 font-semibold">Файл</th>
+                  <th className="p-4 text-right font-semibold">Действие</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {batches.map((b) => (
+                  <tr key={b.id} className="hover:bg-blue-50 transition-colors">
+                    <td className="p-4 text-sm text-gray-700">
+                      {new Date(b.date).toLocaleString('ru-RU')}
+                    </td>
+                    <td className="p-4 text-sm font-mono text-gray-500">
+                      {b.name}
+                    </td>
+                    <td className="p-4 text-right">
+                      <a
+                        href={b.url}
+                        download
+                        className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium px-3 py-1 rounded hover:bg-blue-100 transition-colors">
+                        <Download size={16} /> Скачать
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Header = ({
+  marginThreshold,
+  setMarginThreshold,
+  onSeed,
+  onExport,
+  onHistory,
+}: any) => (
+  <header className="bg-white border-b sticky top-0 z-20 shadow-sm">
+    <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div className="flex items-center gap-3">
+        <div className="bg-blue-600 p-2 rounded-lg text-white shadow-lg shadow-blue-200">
+          <Database size={24} />
+        </div>
+        <div>
+          <h1 className="text-xl font-bold leading-none text-gray-900">
+            Repricing Manager
+          </h1>
+          <p className="text-xs text-gray-500 font-medium">Local Auto Parts</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4">
+        <div
+          className="flex items-center gap-2 bg-yellow-50 px-3 py-1.5 rounded-lg border border-yellow-200 shadow-sm"
+          title="Порог маржи для подсветки">
+          <span className="text-xs font-bold text-yellow-800 uppercase tracking-wide">
+            Маржа %
+          </span>
+          <input
+            type="number"
+            value={marginThreshold}
+            onChange={(e) => setMarginThreshold(Number(e.target.value))}
+            className="w-14 bg-white border border-yellow-300 rounded px-1 text-sm text-center font-bold outline-none focus:ring-2 focus:ring-yellow-400"
+          />
+        </div>
+
+        <button
+          onClick={onSeed}
+          className="text-gray-400 hover:text-red-600 transition-colors p-2 rounded-full hover:bg-red-50"
+          title="Сброс БД">
+          <RefreshCw size={20} />
+        </button>
+
+        <div className="h-8 w-px bg-gray-200 mx-1"></div>
+
+        <button
+          onClick={onHistory}
+          className="flex items-center gap-2 text-gray-600 hover:text-blue-600 px-3 py-2 rounded-lg font-medium transition-colors text-sm hover:bg-blue-50">
+          <Clock size={18} /> История
+        </button>
+
+        <button
+          onClick={onExport}
+          className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded-lg font-bold transition-all shadow-md hover:shadow-lg active:scale-95 text-sm">
+          <FileSpreadsheet size={18} /> Экспорт
+        </button>
+      </div>
+    </div>
+  </header>
+);
+
+const Pagination = ({ page, totalPages, totalItems, setPage, limit }: any) => (
+  <div className="p-4 border-t flex items-center justify-between bg-gray-50 rounded-b-xl">
+    <span className="text-sm text-gray-600 font-medium">
+      Страница {page} из {totalPages || 1}{' '}
+      <span className="text-gray-400 font-normal ml-1">
+        ({totalItems} товаров)
+      </span>
+    </span>
+    <div className="flex gap-2">
+      <button
+        disabled={page === 1}
+        onClick={() => setPage((p: number) => p - 1)}
+        className="px-4 py-2 border rounded-md bg-white disabled:opacity-50 hover:bg-gray-100 text-sm font-medium transition-colors shadow-sm">
+        Назад
+      </button>
+      <button
+        disabled={totalPages > 0 ? page >= totalPages : true}
+        onClick={() => setPage((p: number) => p + 1)}
+        className="px-4 py-2 border rounded-md bg-white disabled:opacity-50 hover:bg-gray-100 text-sm font-medium transition-colors shadow-sm">
+        Вперед
+      </button>
+    </div>
+  </div>
+);
+
+// --- MAIN APP COMPONENT ---
+
 export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
 
   const [marginThreshold, setMarginThreshold] = useState<number>(() => {
     const saved = localStorage.getItem('marginThreshold');
@@ -107,8 +271,6 @@ export default function App() {
     localStorage.setItem('marginThreshold', String(marginThreshold));
   }, [marginThreshold]);
 
-  // --- API CALLS ---
-
   const fetchProducts = async () => {
     setLoading(true);
     try {
@@ -121,28 +283,22 @@ export default function App() {
 
       const res = await fetch(`/api/products?${query}`);
       if (!res.ok) throw new Error('Ошибка сети');
-
       const responseData = await res.json();
 
       let list: any[] = [];
       let total = 0;
 
-      // Обработка нового формата { data: [], meta: { total: 100 } }
       if (responseData.data && Array.isArray(responseData.data)) {
         list = responseData.data;
         total = responseData.meta?.total || 0;
       } else if (Array.isArray(responseData)) {
-        // Fallback для старого формата
         list = responseData;
         total = responseData.length;
       }
 
-      const formatted = list.map((p: any) => ({
-        ...p,
-        manual_flag: Boolean(p.manual_flag),
-      }));
-
-      setProducts(formatted);
+      setProducts(
+        list.map((p: any) => ({ ...p, manual_flag: Boolean(p.manual_flag) }))
+      );
       setTotalItems(total);
     } catch (error) {
       console.error('Fetch error:', error);
@@ -152,20 +308,22 @@ export default function App() {
   };
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchProducts();
-    }, 300);
+    const timer = setTimeout(() => fetchProducts(), 300);
     return () => clearTimeout(timer);
   }, [page, filterStatus, search]);
 
-  // --- ДЕЙСТВИЯ ---
-
+  // Optimistic Update: Remove from list if filter matches current status
   const handleUpdatePrice = async (sku: string, price: number) => {
-    setProducts((prev) =>
-      prev.map((p) =>
+    setProducts((prev) => {
+      // Если мы во вкладке "В работе", то при утверждении товар должен исчезнуть
+      if (filterStatus === 'pending') {
+        return prev.filter((p) => p.sku !== sku);
+      }
+      return prev.map((p) =>
         p.sku === sku ? { ...p, new_price: price, status: 'approved' } : p
-      )
-    );
+      );
+    });
+
     try {
       await fetch(`/api/products/${sku}`, {
         method: 'PATCH',
@@ -174,16 +332,20 @@ export default function App() {
       });
     } catch (err) {
       console.error(err);
-    }
+      fetchProducts();
+    } // Revert on error
   };
 
   const handleResetStatus = async (sku: string) => {
     setProducts((prev) =>
-      filterStatus === 'all'
-        ? prev.map((p) =>
+      // Если мы в архиве или отложенных, товар исчезает при возврате
+      filterStatus === 'exported' ||
+      filterStatus === 'deferred' ||
+      filterStatus === 'approved'
+        ? prev.filter((p) => p.sku !== sku)
+        : prev.map((p) =>
             p.sku === sku ? { ...p, status: 'pending', new_price: null } : p
           )
-        : prev.filter((p) => p.sku !== sku)
     );
 
     try {
@@ -227,65 +389,54 @@ export default function App() {
   };
 
   const handleSeedDatabase = async () => {
-    if (
-      !confirm(
-        'ВНИМАНИЕ: Это полностью очистит базу данных и загрузит исходный JSON. Продолжить?'
-      )
-    )
+    if (!confirm('ВНИМАНИЕ: Сброс базы данных удалит всю историю. Продолжить?'))
       return;
     setLoading(true);
     try {
       const res = await fetch('/api/seed', { method: 'POST' });
-      if (!res.ok) throw new Error('Ошибка при посеве данных');
-      const result = await res.json();
-      alert(result.message || 'База данных успешно обновлена!');
+      if (!res.ok) throw new Error('Ошибка при посеве');
+      alert('БД сброшена!');
       setSearch('');
       setPage(1);
       setFilterStatus('pending');
       fetchProducts();
     } catch (err) {
-      alert('Ошибка: Не удалось загрузить данные.');
+      alert('Ошибка');
       console.error(err);
       setLoading(false);
     }
   };
 
   const handleExportBatch = async () => {
-    if (!confirm('Создать файл экспорта (Excel) для всех одобренных товаров?'))
-      return;
+    if (!confirm('Экспортировать ВСЕ одобренные товары?')) return;
     try {
       const res = await fetch('/api/batches/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
-
-      if (!res.ok) {
-        const errText = await res.json();
-        throw new Error(errText.error || 'Ошибка сервера');
-      }
-
+      if (!res.ok)
+        throw new Error((await res.json()).error || 'Ошибка сервера');
       const result = await res.json();
-      alert(
-        `Пакет #${result.batch_id} успешно создан! Товаров: ${result.count}`
-      );
-
-      // Если сервер вернул ссылку на скачивание (пока просто алертим, но можно открыть)
-      // window.location.href = result.downloadUrl;
-
+      alert(`Пакет #${result.batch_id} создан! (${result.count} товаров)`);
+      if (result.downloadUrl) {
+        const link = document.createElement('a');
+        link.href = result.downloadUrl;
+        link.download = `batch_${result.batch_id}.xlsx`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
       fetchProducts();
     } catch (err: any) {
-      alert('Ошибка экспорта: ' + err.message);
+      alert(err.message);
     }
   };
 
-  const totalPages = Math.ceil(totalItems / LIMIT);
-
-  // Стили для категорий (вкладок)
   const STATUS_STYLES = {
     pending: {
       label: 'В работе',
-      base: 'text-gray-600 border-transparent hover:bg-gray-50',
+      base: 'text-gray-600 border-transparent hover:bg-gray-100',
       active:
         'bg-white ring-2 ring-blue-600 text-blue-700 font-bold shadow-md transform scale-105',
     },
@@ -315,11 +466,9 @@ export default function App() {
     },
   };
 
-  // Helper для определения стилей строки
   const getRowStyles = (p: Product, isHighMargin: boolean) => {
     let base = 'hover:bg-gray-50 transition-colors border-b border-gray-100 ';
     let border = 'border-l-4 border-transparent';
-
     if (p.status === 'approved') {
       base += 'bg-blue-50/60 ';
       border = 'border-l-4 border-blue-500';
@@ -333,66 +482,26 @@ export default function App() {
       base += 'bg-green-50/30 ';
       border = 'border-l-4 border-green-400';
     }
-
     return { rowClass: base, borderClass: border };
   };
 
   return (
     <div className="min-h-screen bg-gray-50 text-slate-800 font-sans">
-      <header className="bg-white border-b sticky top-0 z-20 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded text-white">
-              <Database size={24} />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold leading-none">
-                Repricing Manager
-              </h1>
-              <p className="text-xs text-gray-500">
-                Local Auto Parts • Real API
-              </p>
-            </div>
-          </div>
+      {showHistory && <HistoryModal onClose={() => setShowHistory(false)} />}
 
-          <div className="flex items-center gap-4">
-            <div
-              className="flex items-center gap-2 bg-yellow-50 px-3 py-1.5 rounded border border-yellow-200"
-              title="Если маржа выше этого значения, товар подсвечивается зеленым">
-              <span className="text-xs font-semibold text-yellow-800">
-                Маржа (%):
-              </span>
-              <input
-                type="number"
-                value={marginThreshold}
-                onChange={(e) => setMarginThreshold(Number(e.target.value))}
-                className="w-16 bg-white border border-yellow-300 rounded px-1 text-sm text-center font-bold outline-none focus:ring-1 focus:ring-yellow-400"
-              />
-            </div>
+      <Header
+        marginThreshold={marginThreshold}
+        setMarginThreshold={setMarginThreshold}
+        onSeed={handleSeedDatabase}
+        onExport={handleExportBatch}
+        onHistory={() => setShowHistory(true)}
+      />
 
-            <button
-              onClick={handleSeedDatabase}
-              className="text-gray-400 hover:text-red-600 transition-colors p-2 rounded-full hover:bg-red-50"
-              title="Сброс и полная перезагрузка БД">
-              <RefreshCw size={20} />
-            </button>
-
-            <button
-              onClick={handleExportBatch}
-              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 py-2.5 rounded-lg font-medium transition-colors shadow-sm text-sm"
-              title="Экспорт всех одобренных товаров в Excel">
-              <FileSpreadsheet size={18} />
-              Экспорт (Excel)
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <div className="max-w-7xl mx-auto px-4 py-4 space-y-4">
+      <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
         <div className="flex flex-col md:flex-row gap-4 justify-between items-end md:items-center">
-          <div className="relative w-full md:w-96">
+          <div className="relative w-full md:w-96 group">
             <Search
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-blue-500 transition-colors"
               size={18}
             />
             <input
@@ -404,66 +513,60 @@ export default function App() {
                 setPage(1);
                 if (e.target.value) setFilterStatus('all');
               }}
-              className="w-full pl-10 pr-4 py-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none shadow-sm transition-shadow"
+              className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none shadow-sm transition-all"
             />
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 bg-gray-100 p-1.5 rounded-lg border border-gray-200">
             {(
               Object.keys(STATUS_STYLES) as Array<keyof typeof STATUS_STYLES>
-            ).map((key) => {
-              const style = STATUS_STYLES[key];
-              const isActive = filterStatus === key;
-              return (
-                <button
-                  key={key}
-                  onClick={() => {
-                    setFilterStatus(key);
-                    setPage(1);
-                  }}
-                  className={`px-4 py-2 rounded-md text-sm transition-all duration-200 border ${
-                    isActive ? style.active : style.base
-                  }`}>
-                  {style.label}
-                </button>
-              );
-            })}
+            ).map((key) => (
+              <button
+                key={key}
+                onClick={() => {
+                  setFilterStatus(key);
+                  setPage(1);
+                }}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 border ${
+                  filterStatus === key
+                    ? STATUS_STYLES[key].active
+                    : STATUS_STYLES[key].base
+                }`}>
+                {STATUS_STYLES[key].label}
+              </button>
+            ))}
           </div>
         </div>
-      </div>
 
-      <main className="max-w-7xl mx-auto px-4 pb-12">
-        <div className="bg-white rounded-xl shadow border overflow-hidden min-h-[400px]">
+        <main className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden flex flex-col min-h-[500px]">
           {loading ? (
-            <div className="flex flex-col items-center justify-center h-64 text-gray-500">
-              <Loader2 className="animate-spin mb-2" size={32} />
-              <span>Загрузка данных...</span>
+            <div className="flex flex-col items-center justify-center flex-1 text-gray-500">
+              <Loader2 className="animate-spin mb-3 text-blue-600" size={40} />
+              <span className="font-medium">Загрузка данных...</span>
             </div>
           ) : products.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-4">
-              <span>Товары не найдены</span>
+            <div className="flex flex-col items-center justify-center flex-1 text-gray-400 gap-4">
+              <span>Список пуст</span>
               {filterStatus === 'pending' && !search && (
                 <button
                   onClick={handleSeedDatabase}
-                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors">
-                  Загрузить данные из файла (Seed)
+                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors shadow-md">
+                  Загрузить данные (Seed)
                 </button>
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto flex-1">
               <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-gray-100 text-gray-600 text-sm uppercase tracking-wider">
+                <thead className="bg-gray-100/80 text-gray-600 text-xs uppercase tracking-wider sticky top-0 z-10 backdrop-blur-sm">
+                  <tr>
                     <th className="p-4 w-16 text-center">Группа</th>
-                    <th className="p-4">Товар (SKU / Название)</th>
+                    <th className="p-4">Товар</th>
                     <th className="p-4 w-24 text-right">Остаток</th>
                     <th className="p-4 w-28 text-right">Закуп</th>
-
-                    <th className="p-4 w-32 text-right">Цена</th>
                     <th className="p-4 w-24 text-center">Маржа %</th>
-                    <th className="p-4 w-32 text-right">Доход</th>
-
-                    <th className="p-4 w-96">Новая цена (Варианты)</th>
+                    <th className="p-4 w-28 text-right">Доход</th>
+                    <th className="p-4 w-28 text-right">Цена</th>
+                    <th className="p-4 w-96">Управление ценой</th>
                     <th className="p-4 text-center">Действия</th>
                   </tr>
                 </thead>
@@ -475,13 +578,10 @@ export default function App() {
                     const suggestions = PriceCalculator.calculateSuggestions(
                       p.currentPrice
                     );
-
                     const { rowClass, borderClass } = getRowStyles(
                       p,
                       isHighMargin
                     );
-
-                    // Определение цвета для ABC (A=Green, B=Yellow, C=Red)
                     let abcColor = 'bg-gray-100 text-gray-700';
                     if (p.abcMargin === 'A')
                       abcColor = 'bg-green-100 text-green-800';
@@ -494,130 +594,113 @@ export default function App() {
                       <tr
                         key={p.sku}
                         className={`${rowClass} group ${borderClass}`}>
-                        {/* ГРУППА ABC */}
-                        <td className="p-4 text-center">
+                        <td className="p-4 text-center align-top">
                           <Badge color={abcColor}>{p.abcMargin}</Badge>
                           <div
-                            className="text-lg font-bold text-red-600 mt-2 cursor-help"
-                            title={`Потери в день: ${
-                              p.daily_loss?.toFixed(2) || 0
-                            }`}>
+                            className="text-sm font-bold text-red-600 mt-2 cursor-help"
+                            title={`Потери в день: ${p.daily_loss?.toFixed(
+                              2
+                            )}`}>
                             {p.daily_loss ? p.daily_loss.toFixed(2) : '0.00'}
                           </div>
                         </td>
 
-                        {/* ТОВАР */}
-                        <td className="p-4">
-                          <div className="flex flex-col gap-1">
+                        <td className="p-4 align-top">
+                          <div className="flex flex-col gap-1.5">
                             <span
-                              className="font-medium text-gray-900 line-clamp-2 text-base flex items-center gap-2"
+                              className="font-semibold text-gray-900 leading-snug text-sm md:text-base line-clamp-2"
                               title={p.name}>
                               {p.name}
                             </span>
-
-                            {/* Индикатор статуса для поиска */}
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm text-gray-500 font-mono font-bold">
+                              <span className="text-xs text-gray-500 font-mono bg-gray-100 px-1.5 rounded">
                                 {p.sku}
                               </span>
-
                               {p.status === 'approved' && (
-                                <span className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded border border-blue-200 uppercase flex items-center gap-1">
-                                  <CheckCircle2 size={10} /> Готов
+                                <span className="status-badge bg-blue-100 text-blue-700 border-blue-200">
+                                  <CheckCircle2 size={12} /> Готов
                                 </span>
                               )}
                               {p.status === 'deferred' && (
-                                <span className="text-[10px] font-bold bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded border border-gray-300 uppercase flex items-center gap-1">
-                                  <EyeOff size={10} /> Отложен
+                                <span className="status-badge bg-gray-200 text-gray-600 border-gray-300">
+                                  <EyeOff size={12} /> Отложен
                                 </span>
                               )}
                               {p.status === 'exported' && (
-                                <span className="text-[10px] font-bold bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded border border-purple-200 uppercase flex items-center gap-1">
-                                  <FileSpreadsheet size={10} /> Архив
-                                </span>
+                                <div className="flex items-center gap-2">
+                                  <span className="status-badge bg-purple-100 text-purple-700 border-purple-200">
+                                    <FileSpreadsheet size={12} /> Архив
+                                  </span>
+                                  {p.batch_id && (
+                                    <a
+                                      href={`/exports/batch_${p.batch_id}.xlsx`}
+                                      className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                                      title="Скачать исходный файл выгрузки">
+                                      <Download size={10} /> Файл
+                                    </a>
+                                  )}
+                                </div>
                               )}
                             </div>
-
                             {p.manual_flag && (
-                              <span className="inline-flex items-center gap-1 text-xs text-red-600 mt-1 font-bold">
-                                <span title="Требует внимания">
-                                  <Flag size={12} fill="currentColor" />
-                                </span>{' '}
-                                На проверке
+                              <span className="inline-flex items-center gap-1 text-xs text-red-600 font-bold bg-red-50 px-2 py-0.5 rounded w-fit">
+                                <Flag size={10} fill="currentColor" /> Проверить
                               </span>
                             )}
                           </div>
                         </td>
 
-                        {/* ОСТАТОК */}
-                        <td className="p-4 text-right font-mono text-gray-600 text-base">
+                        <td className="p-4 text-right font-mono text-gray-600 align-top">
                           {p.stock}
                         </td>
-
-                        {/* ЗАКУП */}
-                        <td className="p-4 text-right font-mono text-gray-500 text-base">
+                        <td className="p-4 text-right font-mono text-gray-500 align-top">
                           {p.costPrice.toFixed(0)}
                         </td>
-
-                        {/* ЦЕНА */}
-                        <td className="p-4 text-right font-mono font-bold text-gray-900 text-base">
-                          {p.currentPrice.toFixed(0)}
-                        </td>
-
-                        {/* МАРЖА % */}
-                        <td className="p-4 text-center">
-                          <div className="flex items-center justify-center gap-1">
+                        <td className="p-4 text-center align-top">
+                          <div className="flex justify-center items-center gap-1 font-bold">
                             <span
-                              className={`text-base font-bold ${
+                              className={
                                 marginPercent < 15
                                   ? 'text-red-600'
                                   : marginPercent > marginThreshold
                                   ? 'text-green-600'
                                   : 'text-gray-700'
-                              }`}>
-                              {marginPercent.toFixed(1)}%
+                              }>
+                              {marginPercent.toFixed(0)}%
                             </span>
                             {isHighMargin && (
-                              <div title="Высокая маржа">
-                                <ArrowUpRight
-                                  size={16}
-                                  className="text-green-500"
-                                />
-                              </div>
+                              <ArrowUpRight
+                                size={14}
+                                className="text-green-500"
+                              />
                             )}
                           </div>
                         </td>
-
-                        {/* ДОХОД */}
-                        <td className="p-4 text-right font-mono text-gray-600 text-base">
+                        <td className="p-4 text-right font-mono text-gray-600 align-top">
                           {Math.round(p.marginTotal || 0).toLocaleString()}
                         </td>
+                        <td className="p-4 text-right font-bold text-gray-900 font-mono align-top text-lg">
+                          {p.currentPrice.toFixed(0)}
+                        </td>
 
-                        {/* НОВАЯ ЦЕНА / ВАРИАНТЫ */}
-                        <td className="p-4">
+                        <td className="p-4 align-top">
                           {p.status === 'approved' ||
                           p.status === 'exported' ? (
                             <div className="flex items-center gap-3">
-                              <div className="bg-blue-100 text-blue-800 px-4 py-2 rounded-lg font-bold text-lg border border-blue-200">
+                              <div className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-lg shadow-sm">
                                 {p.new_price}
                               </div>
-                              {/* Кнопка отмены утверждения */}
                               {p.status !== 'exported' && (
                                 <button
                                   onClick={() => handleResetStatus(p.sku)}
-                                  className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"
-                                  title="Вернуть в работу (Сбросить статус)">
-                                  <Undo2 size={20} />
+                                  className="p-2 text-gray-400 hover:text-red-600 bg-white border border-gray-200 hover:border-red-200 rounded-lg transition-all shadow-sm"
+                                  title="Отменить">
+                                  <Undo2 size={18} />
                                 </button>
-                              )}
-                              {p.status === 'exported' && (
-                                <span className="text-xs text-gray-400 italic">
-                                  Экспортирован
-                                </span>
                               )}
                             </div>
                           ) : (
-                            <div className="flex flex-col gap-3">
+                            <div className="flex flex-col gap-2">
                               <div className="flex gap-2 flex-wrap">
                                 {suggestions.map((price) => (
                                   <button
@@ -625,8 +708,7 @@ export default function App() {
                                     onClick={() =>
                                       handleUpdatePrice(p.sku, price)
                                     }
-                                    className="px-3 py-2 bg-white border-2 border-gray-200 hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 rounded-md text-base font-medium transition-all shadow-sm"
-                                    title={`Установить цену: ${price}`}>
+                                    className="px-3 py-1.5 bg-white border-2 border-gray-200 hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 rounded-lg text-sm font-bold transition-all shadow-sm active:scale-95">
                                     {price}
                                   </button>
                                 ))}
@@ -634,8 +716,8 @@ export default function App() {
                               <div className="flex gap-2 items-center">
                                 <input
                                   type="number"
-                                  placeholder="Своя цена"
-                                  className="w-28 px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                  placeholder="Своя..."
+                                  className="w-24 px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
                                   onKeyDown={(e) => {
                                     if (e.key === 'Enter')
                                       handleUpdatePrice(
@@ -648,59 +730,43 @@ export default function App() {
                                   onClick={() =>
                                     handleUpdatePrice(p.sku, p.currentPrice)
                                   }
-                                  className="text-sm text-gray-500 hover:text-gray-800 underline decoration-dotted"
-                                  title="Оставить текущую цену без изменений">
-                                  Оставить старую
+                                  className="text-xs text-gray-500 hover:text-gray-900 underline">
+                                  Старая
                                 </button>
                               </div>
                             </div>
                           )}
                         </td>
 
-                        {/* ДЕЙСТВИЯ (Иконки) */}
-                        <td className="p-4 text-center">
+                        <td className="p-4 text-center align-top">
                           <div className="flex justify-center gap-2">
-                            {/* Кнопка возврата для отложенных */}
                             {p.status === 'deferred' && (
                               <button
                                 onClick={() => handleResetStatus(p.sku)}
-                                className="p-2.5 rounded-lg text-green-600 hover:bg-green-50 border border-transparent hover:border-green-200 transition-all"
-                                title="Вернуть в работу">
-                                <Undo2 size={20} />
+                                className="action-btn text-green-600 hover:bg-green-50 hover:border-green-200"
+                                title="Вернуть">
+                                <Undo2 size={18} />
                               </button>
                             )}
-
                             <button
                               onClick={() => handleFlag(p.sku, p.manual_flag)}
-                              className={`p-2.5 rounded-lg border border-transparent hover:border-gray-200 transition-all ${
+                              className={`action-btn ${
                                 p.manual_flag
-                                  ? 'text-red-500 bg-red-50'
-                                  : 'text-gray-400 hover:bg-gray-50 hover:text-gray-600'
+                                  ? 'text-red-500 bg-red-50 border-red-200'
+                                  : 'text-gray-400 hover:bg-gray-50'
                               }`}
-                              title={
-                                p.manual_flag
-                                  ? 'Снять метку проверки'
-                                  : 'Пометить для ручной проверки'
-                              }>
-                              <span
-                                title={
-                                  p.manual_flag
-                                    ? 'Снять метку'
-                                    : 'Поставить метку'
-                                }>
-                                <Flag
-                                  size={20}
-                                  fill={p.manual_flag ? 'currentColor' : 'none'}
-                                />
-                              </span>
+                              title="Флаг">
+                              <Flag
+                                size={18}
+                                fill={p.manual_flag ? 'currentColor' : 'none'}
+                              />
                             </button>
-
                             {p.status === 'pending' && (
                               <button
                                 onClick={() => handleDefer(p.sku)}
-                                className="p-2.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg border border-transparent hover:border-gray-200 transition-all"
-                                title="Отложить товар (Пропустить)">
-                                <EyeOff size={20} />
+                                className="action-btn text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+                                title="Отложить">
+                                <EyeOff size={18} />
                               </button>
                             )}
                           </div>
@@ -712,34 +778,21 @@ export default function App() {
               </table>
             </div>
           )}
+          <Pagination
+            page={page}
+            totalPages={Math.ceil(totalItems / LIMIT)}
+            totalItems={totalItems}
+            setPage={setPage}
+            limit={LIMIT}
+          />
+        </main>
+      </div>
 
-          {/* ПАГИНАЦИЯ */}
-          <div className="p-4 border-t flex items-center justify-between bg-gray-50">
-            <span className="text-sm text-gray-600 font-medium">
-              Страница {page} из {totalPages || 1}{' '}
-              <span className="text-gray-400 font-normal ml-1">
-                (Всего: {totalItems})
-              </span>
-            </span>
-            <div className="flex gap-2">
-              <button
-                disabled={page === 1}
-                onClick={() => setPage((p) => p - 1)}
-                className="px-4 py-2 border rounded-md bg-white disabled:opacity-50 hover:bg-gray-50 text-sm font-medium transition-colors">
-                Назад
-              </button>
-              <button
-                // Кнопка будет активна, если мы еще не достигли лимита страниц (totalPages)
-                // Если totalPages = 0 (нет данных), кнопка отключена
-                disabled={totalPages > 0 ? page >= totalPages : true}
-                onClick={() => setPage((p) => p + 1)}
-                className="px-4 py-2 border rounded-md bg-white disabled:opacity-50 hover:bg-gray-50 text-sm font-medium transition-colors">
-                Вперед
-              </button>
-            </div>
-          </div>
-        </div>
-      </main>
+      {/* Global Styles for badge consistency */}
+      <style>{`
+        .status-badge { @apply text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase flex items-center gap-1 w-fit; }
+        .action-btn { @apply p-2 rounded-lg border border-transparent hover:border-gray-200 transition-all; }
+      `}</style>
     </div>
   );
 }
