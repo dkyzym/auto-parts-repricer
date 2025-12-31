@@ -1,328 +1,181 @@
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import {
-  ArrowUpRight,
-  CheckCircle2,
-  Clock,
-  Database,
-  Download,
-  EyeOff,
-  FileSpreadsheet,
-  Flag,
-  Loader2,
-  RefreshCw,
-  Search,
-  Undo2,
-  X,
-} from 'lucide-react';
-import { useEffect, useState } from 'react';
+  AppShell,
+  Container,
+  Group,
+  Button,
+  TextInput,
+  NumberInput,
+  Table,
+  ScrollArea,
+  Badge,
+  Text,
+  ActionIcon,
+  Pagination,
+  LoadingOverlay,
+  SegmentedControl,
+  Box,
+  Modal,
+  Title,
+  Paper,
+} from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
+import {
+  useReactTable,
+  getCoreRowModel,
+  flexRender,
+  createColumnHelper,
+} from '@tanstack/react-table';
+import {
+  IconSearch,
+  IconDatabase,
+  IconFileSpreadsheet,
+  IconRefresh,
+  IconHistory,
+  IconFlag,
+  IconEyeOff,
+  IconArrowUpRight,
+  IconRotate2,
+  IconDownload,
+} from '@tabler/icons-react';
 
-// --- ТИПЫ И ИНТЕРФЕЙСЫ ---
+import { Product, ApiResponse } from './types';
+import { PriceControlCell } from './components/PriceControlCell';
 
-interface Product {
-  sku: string;
-  name: string;
-  stock: number;
-  costPrice: number;
-  currentPrice: number;
-  salesQty: number;
-  abcMargin: 'A' | 'B' | 'C' | 'N';
-  marginTotal: number;
-  sourceStatus: string;
-  new_price: number | null;
-  status: 'pending' | 'approved' | 'deferred' | 'exported';
-  manual_flag: boolean;
-  daily_loss?: number;
-  batch_id?: number; // ID выгрузки, если товар в архиве
-}
-
-interface BatchFile {
-  id: string;
-  name: string;
-  date: string;
-  size: number;
-  url: string;
-}
-
-// --- УТИЛИТЫ ---
-
-class PriceCalculator {
-  private static MARKUP_BASE = 1.06;
-
-  static calculateSuggestions(currentPrice: number): number[] {
-    const rawPrice = currentPrice * this.MARKUP_BASE;
-    let options: number[] = [];
-
-    if (rawPrice < 50) {
-      options = [
-        Math.ceil(rawPrice),
-        Math.ceil(rawPrice / 5) * 5,
-        Math.ceil(rawPrice / 10) * 10,
-      ];
-    } else if (rawPrice >= 50 && rawPrice < 200) {
-      options = [
-        Math.ceil(rawPrice / 5) * 5,
-        Math.ceil(rawPrice / 10) * 10,
-        Math.ceil(rawPrice / 50) * 50,
-      ];
-    } else if (rawPrice >= 200 && rawPrice < 1000) {
-      const optA = Math.ceil(rawPrice / 10) * 10;
-      const optB = Math.ceil(rawPrice / 50) * 50;
-      let optC = Math.ceil(rawPrice / 100) * 100;
-      if (optC % 500 === 0) optC -= 10;
-      options = [optA, optB, optC];
-    } else {
-      const optA = Math.ceil(rawPrice / 50) * 50;
-      const optB = Math.ceil((rawPrice - 90) / 100) * 100 + 90;
-      const optC = Math.ceil(rawPrice / 100) * 100;
-      options = [optA, optB, optC];
-    }
-    return Array.from(new Set(options)).sort((a, b) => a - b);
-  }
-}
-
-// --- SUB-COMPONENTS ---
-
-const Badge = ({
-  children,
-  color,
+// --- Модальное окно истории ---
+const HistoryModal = ({
+  opened,
+  onClose,
 }: {
-  children: React.ReactNode;
-  color: string;
-}) => (
-  <span
-    className={`px-3 py-1.5 rounded-md text-sm font-bold shadow-sm ${color}`}>
-    {children}
-  </span>
-);
-
-const HistoryModal = ({ onClose }: { onClose: () => void }) => {
-  const [batches, setBatches] = useState<BatchFile[]>([]);
-  const [loading, setLoading] = useState(true);
+  opened: boolean;
+  onClose: () => void;
+}) => {
+  const [batches, setBatches] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch('/api/batches')
-      .then((res) => res.json())
-      .then((data) => setBatches(data))
-      .catch((err) => console.error(err))
-      .finally(() => setLoading(false));
-  }, []);
+    if (opened)
+      fetch('/api/batches')
+        .then((r) => r.json())
+        .then(setBatches);
+  }, [opened]);
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center backdrop-blur-sm p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
-        <div className="p-4 border-b flex items-center justify-between bg-gray-50 rounded-t-xl">
-          <h2 className="text-xl font-bold flex items-center gap-2 text-gray-800">
-            <Clock className="text-blue-600" /> История выгрузок
-          </h2>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-200 rounded-full transition-colors">
-            <X size={20} className="text-gray-500" />
-          </button>
-        </div>
-        <div className="overflow-y-auto flex-1 p-0">
-          {loading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 className="animate-spin text-blue-500" size={32} />
-            </div>
-          ) : batches.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">История пуста</div>
+    <Modal opened={opened} onClose={onClose} title="История выгрузок" size="lg">
+      <Table>
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Дата</Table.Th>
+            <Table.Th>Файл</Table.Th>
+            <Table.Th></Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {batches.length === 0 ? (
+            <Table.Tr>
+              <Table.Td colSpan={3} align="center">
+                Нет истории
+              </Table.Td>
+            </Table.Tr>
           ) : (
-            <table className="w-full text-left border-collapse">
-              <thead className="bg-gray-100 text-gray-600 text-sm sticky top-0">
-                <tr>
-                  <th className="p-4 font-semibold">Дата создания</th>
-                  <th className="p-4 font-semibold">Файл</th>
-                  <th className="p-4 text-right font-semibold">Действие</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {batches.map((b) => (
-                  <tr key={b.id} className="hover:bg-blue-50 transition-colors">
-                    <td className="p-4 text-sm text-gray-700">
-                      {new Date(b.date).toLocaleString('ru-RU')}
-                    </td>
-                    <td className="p-4 text-sm font-mono text-gray-500">
-                      {b.name}
-                    </td>
-                    <td className="p-4 text-right">
-                      <a
-                        href={b.url}
-                        download
-                        className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium px-3 py-1 rounded hover:bg-blue-100 transition-colors">
-                        <Download size={16} /> Скачать
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            batches.map((b) => (
+              <Table.Tr key={b.id}>
+                <Table.Td>{new Date(b.date).toLocaleString('ru-RU')}</Table.Td>
+                <Table.Td style={{ fontFamily: 'monospace' }}>
+                  {b.name}
+                </Table.Td>
+                <Table.Td align="right">
+                  <Button
+                    component="a"
+                    href={b.url}
+                    download
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconDownload size={14} />}>
+                    Скачать
+                  </Button>
+                </Table.Td>
+              </Table.Tr>
+            ))
           )}
-        </div>
-      </div>
-    </div>
+        </Table.Tbody>
+      </Table>
+    </Modal>
   );
 };
 
-const Header = ({
-  marginThreshold,
-  setMarginThreshold,
-  onSeed,
-  onExport,
-  onHistory,
-}: any) => (
-  <header className="bg-white border-b sticky top-0 z-20 shadow-sm">
-    <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-      <div className="flex items-center gap-3">
-        <div className="bg-blue-600 p-2 rounded-lg text-white shadow-lg shadow-blue-200">
-          <Database size={24} />
-        </div>
-        <div>
-          <h1 className="text-xl font-bold leading-none text-gray-900">
-            Repricing Manager
-          </h1>
-          <p className="text-xs text-gray-500 font-medium">Local Auto Parts</p>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-4">
-        <div
-          className="flex items-center gap-2 bg-yellow-50 px-3 py-1.5 rounded-lg border border-yellow-200 shadow-sm"
-          title="Порог маржи для подсветки">
-          <span className="text-xs font-bold text-yellow-800 uppercase tracking-wide">
-            Маржа %
-          </span>
-          <input
-            type="number"
-            value={marginThreshold}
-            onChange={(e) => setMarginThreshold(Number(e.target.value))}
-            className="w-14 bg-white border border-yellow-300 rounded px-1 text-sm text-center font-bold outline-none focus:ring-2 focus:ring-yellow-400"
-          />
-        </div>
-
-        <button
-          onClick={onSeed}
-          className="text-gray-400 hover:text-red-600 transition-colors p-2 rounded-full hover:bg-red-50"
-          title="Сброс БД">
-          <RefreshCw size={20} />
-        </button>
-
-        <div className="h-8 w-px bg-gray-200 mx-1"></div>
-
-        <button
-          onClick={onHistory}
-          className="flex items-center gap-2 text-gray-600 hover:text-blue-600 px-3 py-2 rounded-lg font-medium transition-colors text-sm hover:bg-blue-50">
-          <Clock size={18} /> История
-        </button>
-
-        <button
-          onClick={onExport}
-          className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded-lg font-bold transition-all shadow-md hover:shadow-lg active:scale-95 text-sm">
-          <FileSpreadsheet size={18} /> Экспорт
-        </button>
-      </div>
-    </div>
-  </header>
-);
-
-const Pagination = ({ page, totalPages, totalItems, setPage, limit }: any) => (
-  <div className="p-4 border-t flex items-center justify-between bg-gray-50 rounded-b-xl">
-    <span className="text-sm text-gray-600 font-medium">
-      Страница {page} из {totalPages || 1}{' '}
-      <span className="text-gray-400 font-normal ml-1">
-        ({totalItems} товаров)
-      </span>
-    </span>
-    <div className="flex gap-2">
-      <button
-        disabled={page === 1}
-        onClick={() => setPage((p: number) => p - 1)}
-        className="px-4 py-2 border rounded-md bg-white disabled:opacity-50 hover:bg-gray-100 text-sm font-medium transition-colors shadow-sm">
-        Назад
-      </button>
-      <button
-        disabled={totalPages > 0 ? page >= totalPages : true}
-        onClick={() => setPage((p: number) => p + 1)}
-        className="px-4 py-2 border rounded-md bg-white disabled:opacity-50 hover:bg-gray-100 text-sm font-medium transition-colors shadow-sm">
-        Вперед
-      </button>
-    </div>
-  </div>
-);
-
-// --- MAIN APP COMPONENT ---
-
 export default function App() {
-  const [products, setProducts] = useState<Product[]>([]);
+  // --- Состояние ---
+  const [data, setData] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [showHistory, setShowHistory] = useState(false);
 
   const [marginThreshold, setMarginThreshold] = useState<number>(() => {
-    const saved = localStorage.getItem('marginThreshold');
-    return saved ? Number(saved) : 30;
+    return Number(localStorage.getItem('marginThreshold') || 30);
   });
 
   const [filterStatus, setFilterStatus] = useState<string>('pending');
   const [page, setPage] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
+  const [openedHistory, { open: openHistory, close: closeHistory }] =
+    useDisclosure(false);
+
   const LIMIT = 50;
 
-  useEffect(() => {
-    localStorage.setItem('marginThreshold', String(marginThreshold));
-  }, [marginThreshold]);
+  useEffect(
+    () => localStorage.setItem('marginThreshold', String(marginThreshold)),
+    [marginThreshold]
+  );
 
-  const fetchProducts = async () => {
+  // --- Загрузка данных ---
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const query = new URLSearchParams({
-        page: page.toString(),
-        limit: LIMIT.toString(),
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(LIMIT),
         status: filterStatus,
         q: search,
       });
+      const res = await fetch(`/api/products?${params}`);
+      const json: ApiResponse | Product[] = await res.json();
 
-      const res = await fetch(`/api/products?${query}`);
-      if (!res.ok) throw new Error('Ошибка сети');
-      const responseData = await res.json();
-
-      let list: any[] = [];
+      let list: Product[] = [];
       let total = 0;
 
-      if (responseData.data && Array.isArray(responseData.data)) {
-        list = responseData.data;
-        total = responseData.meta?.total || 0;
-      } else if (Array.isArray(responseData)) {
-        list = responseData;
-        total = responseData.length;
+      if ('meta' in json) {
+        list = json.data;
+        total = json.meta.total;
+      } else if (Array.isArray(json)) {
+        list = json;
+        total = json.length;
       }
 
-      setProducts(
-        list.map((p: any) => ({ ...p, manual_flag: Boolean(p.manual_flag) }))
-      );
+      setData(list.map((p) => ({ ...p, manual_flag: Boolean(p.manual_flag) })));
       setTotalItems(total);
-    } catch (error) {
-      console.error('Fetch error:', error);
+    } catch (e) {
+      console.error(e);
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    const timer = setTimeout(() => fetchProducts(), 300);
-    return () => clearTimeout(timer);
   }, [page, filterStatus, search]);
 
-  // Optimistic Update: Remove from list if filter matches current status
+  useEffect(() => {
+    const t = setTimeout(fetchData, 300);
+    return () => clearTimeout(t);
+  }, [fetchData]);
+
+  // --- Действия пользователя ---
   const handleUpdatePrice = async (sku: string, price: number) => {
-    setProducts((prev) => {
-      // Если мы во вкладке "В работе", то при утверждении товар должен исчезнуть
-      if (filterStatus === 'pending') {
-        return prev.filter((p) => p.sku !== sku);
-      }
-      return prev.map((p) =>
-        p.sku === sku ? { ...p, new_price: price, status: 'approved' } : p
+    // Если мы на вкладке "В работе", товар исчезает сразу
+    if (filterStatus === 'pending') {
+      setData((prev) => prev.filter((p) => p.sku !== sku));
+    } else {
+      setData((prev) =>
+        prev.map((p) =>
+          p.sku === sku ? { ...p, new_price: price, status: 'approved' } : p
+        )
       );
-    });
+    }
 
     try {
       await fetch(`/api/products/${sku}`, {
@@ -331,468 +184,487 @@ export default function App() {
         body: JSON.stringify({ new_price: price, status: 'approved' }),
       });
     } catch (err) {
-      console.error(err);
-      fetchProducts();
-    } // Revert on error
-  };
-
-  const handleResetStatus = async (sku: string) => {
-    setProducts((prev) =>
-      // Если мы в архиве или отложенных, товар исчезает при возврате
-      filterStatus === 'exported' ||
-      filterStatus === 'deferred' ||
-      filterStatus === 'approved'
-        ? prev.filter((p) => p.sku !== sku)
-        : prev.map((p) =>
-            p.sku === sku ? { ...p, status: 'pending', new_price: null } : p
-          )
-    );
-
-    try {
-      await fetch(`/api/products/${sku}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'pending', new_price: null }),
-      });
-    } catch (err) {
-      console.error(err);
+      fetchData();
     }
   };
 
-  const handleDefer = async (sku: string) => {
-    setProducts((prev) => prev.filter((p) => p.sku !== sku));
-    try {
-      await fetch(`/api/products/${sku}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'deferred' }),
+  const handleAction = async (
+    sku: string,
+    action: 'defer' | 'flag' | 'reset',
+    value?: boolean
+  ) => {
+    setData((prev) => {
+      // Логика исчезновения из списка
+      if (action === 'defer' && filterStatus === 'pending')
+        return prev.filter((p) => p.sku !== sku);
+      if (action === 'reset' && filterStatus !== 'all')
+        return prev.filter((p) => p.sku !== sku);
+
+      return prev.map((p) => {
+        if (p.sku !== sku) return p;
+        if (action === 'flag') return { ...p, manual_flag: !!value };
+        if (action === 'reset')
+          return { ...p, status: 'pending', new_price: null };
+        return p;
       });
-    } catch (err) {
-      console.error(err);
+    });
+
+    const body: any = {};
+    if (action === 'flag') body.manual_flag = value;
+    if (action === 'defer') body.status = 'deferred';
+    if (action === 'reset') {
+      body.status = 'pending';
+      body.new_price = null;
     }
+
+    await fetch(`/api/products/${sku}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
   };
 
-  const handleFlag = async (sku: string, currentFlag: boolean) => {
-    const newFlag = !currentFlag;
-    setProducts((prev) =>
-      prev.map((p) => (p.sku === sku ? { ...p, manual_flag: newFlag } : p))
-    );
-    try {
-      await fetch(`/api/products/${sku}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ manual_flag: newFlag }),
-      });
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleSeedDatabase = async () => {
-    if (!confirm('ВНИМАНИЕ: Сброс базы данных удалит всю историю. Продолжить?'))
+  const handleSeed = async () => {
+    if (!confirm('ВНИМАНИЕ: Это полностью сбросит базу данных. Продолжить?'))
       return;
     setLoading(true);
-    try {
-      const res = await fetch('/api/seed', { method: 'POST' });
-      if (!res.ok) throw new Error('Ошибка при посеве');
-      alert('БД сброшена!');
-      setSearch('');
-      setPage(1);
-      setFilterStatus('pending');
-      fetchProducts();
-    } catch (err) {
-      alert('Ошибка');
-      console.error(err);
-      setLoading(false);
-    }
+    await fetch('/api/seed', { method: 'POST' });
+    setSearch('');
+    setPage(1);
+    setFilterStatus('pending');
+    fetchData();
   };
 
-  const handleExportBatch = async () => {
-    if (!confirm('Экспортировать ВСЕ одобренные товары?')) return;
+  const handleExport = async () => {
+    if (!confirm('Создать файл экспорта для готовых товаров?')) return;
     try {
       const res = await fetch('/api/batches/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
-      if (!res.ok)
-        throw new Error((await res.json()).error || 'Ошибка сервера');
-      const result = await res.json();
-      alert(`Пакет #${result.batch_id} создан! (${result.count} товаров)`);
-      if (result.downloadUrl) {
-        const link = document.createElement('a');
-        link.href = result.downloadUrl;
-        link.download = `batch_${result.batch_id}.xlsx`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-      }
-      fetchProducts();
-    } catch (err: any) {
-      alert(err.message);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      alert(`Экспорт завершен! Товаров: ${data.count}`);
+      if (data.downloadUrl) window.location.href = data.downloadUrl;
+      fetchData();
+    } catch (e: any) {
+      alert(e.message);
     }
   };
 
-  const STATUS_STYLES = {
-    pending: {
-      label: 'В работе',
-      base: 'text-gray-600 border-transparent hover:bg-gray-100',
-      active:
-        'bg-white ring-2 ring-blue-600 text-blue-700 font-bold shadow-md transform scale-105',
-    },
-    approved: {
-      label: 'Готовы',
-      base: 'text-blue-600 border-blue-200 hover:bg-blue-50',
-      active:
-        'bg-blue-100 ring-2 ring-blue-600 text-blue-900 font-bold shadow-md transform scale-105',
-    },
-    deferred: {
-      label: 'Отложенные',
-      base: 'text-gray-500 border-gray-200 hover:bg-gray-50',
-      active:
-        'bg-gray-100 ring-2 ring-gray-500 text-gray-800 font-bold shadow-md transform scale-105',
-    },
-    exported: {
-      label: 'Архив',
-      base: 'text-purple-600 border-purple-200 hover:bg-purple-50',
-      active:
-        'bg-purple-100 ring-2 ring-purple-600 text-purple-900 font-bold shadow-md transform scale-105',
-    },
-    all: {
-      label: 'Все',
-      base: 'text-gray-600 border-transparent hover:bg-gray-50',
-      active:
-        'bg-gray-800 ring-2 ring-gray-900 text-white font-bold shadow-md transform scale-105',
-    },
-  };
+  // --- Настройка Таблицы (React Table) ---
+  const columnHelper = createColumnHelper<Product>();
 
-  const getRowStyles = (p: Product, isHighMargin: boolean) => {
-    let base = 'hover:bg-gray-50 transition-colors border-b border-gray-100 ';
-    let border = 'border-l-4 border-transparent';
-    if (p.status === 'approved') {
-      base += 'bg-blue-50/60 ';
-      border = 'border-l-4 border-blue-500';
-    } else if (p.status === 'deferred') {
-      base += 'bg-gray-100/80 text-gray-500 ';
-      border = 'border-l-4 border-gray-400';
-    } else if (p.status === 'exported') {
-      base += 'bg-purple-50/50 ';
-      border = 'border-l-4 border-purple-400';
-    } else if (isHighMargin) {
-      base += 'bg-green-50/30 ';
-      border = 'border-l-4 border-green-400';
-    }
-    return { rowClass: base, borderClass: border };
-  };
+  const columns = useMemo(
+    () => [
+      // 1. Группа
+      columnHelper.accessor('abcMargin', {
+        header: 'Группа',
+        size: 80,
+        cell: (info) => {
+          const val = info.getValue();
+          const loss = info.row.original.daily_loss || 0;
+          let color = 'gray';
+          if (val === 'A') color = 'green';
+          if (val === 'B') color = 'yellow';
+          if (val === 'C') color = 'red';
+          return (
+            <div style={{ textAlign: 'center' }}>
+              <Badge color={color} size="lg" radius="sm">
+                {val}
+              </Badge>
+              <Text c="red.8" fw={700} size="xs" mt={4} title="Потери в день">
+                {loss.toFixed(2)}
+              </Text>
+            </div>
+          );
+        },
+      }),
+      // 2. Наименование (Широкая колонка)
+      columnHelper.accessor('name', {
+        header: 'Товар',
+        size: 400,
+        cell: (info) => {
+          const p = info.row.original;
+          return (
+            <div>
+              <Text
+                fw={600}
+                size="sm"
+                style={{ lineHeight: 1.3, marginBottom: 6 }}>
+                {p.name}
+              </Text>
+              <Group gap={6}>
+                <Badge variant="outline" color="gray" size="xs" radius="xs">
+                  {p.sku}
+                </Badge>
+                {p.manual_flag && (
+                  <Badge
+                    color="red"
+                    variant="light"
+                    size="xs"
+                    leftSection={<IconFlag size={10} />}>
+                    Проверить
+                  </Badge>
+                )}
+                {p.status === 'approved' && (
+                  <Badge color="blue" variant="dot" size="xs">
+                    Готов
+                  </Badge>
+                )}
+                {p.status === 'deferred' && (
+                  <Badge color="gray" variant="dot" size="xs">
+                    Отложен
+                  </Badge>
+                )}
+              </Group>
+            </div>
+          );
+        },
+      }),
+      // 3. Остаток (второстепенно)
+      columnHelper.accessor('stock', {
+        header: 'Ост.',
+        size: 70,
+        cell: (info) => (
+          <Text size="sm" c="dimmed" ta="right">
+            {info.getValue()}
+          </Text>
+        ),
+      }),
+      // 4. Закуп (второстепенно)
+      columnHelper.accessor('costPrice', {
+        header: 'Закуп',
+        size: 90,
+        cell: (info) => (
+          <Text size="sm" c="dimmed" ta="right">
+            {info.getValue().toFixed(0)}
+          </Text>
+        ),
+      }),
+      // 5. Маржа %
+      columnHelper.display({
+        id: 'margin',
+        header: 'Маржа',
+        size: 80,
+        cell: (info) => {
+          const p = info.row.original;
+          const margin = ((p.currentPrice - p.costPrice) / p.costPrice) * 100;
+          const isHigh = margin > marginThreshold;
+          return (
+            <Group gap={4} justify="center">
+              <Text
+                fw={700}
+                size="sm"
+                c={margin < 15 ? 'red' : isHigh ? 'green' : 'dimmed'}>
+                {margin.toFixed(0)}%
+              </Text>
+              {isHigh && (
+                <IconArrowUpRight
+                  size={14}
+                  color="var(--mantine-color-green-6)"
+                />
+              )}
+            </Group>
+          );
+        },
+      }),
+      // 6. Доход
+      columnHelper.accessor('marginTotal', {
+        header: 'Доход',
+        size: 100,
+        cell: (info) => (
+          <Text size="sm" ta="right">
+            {Math.round(info.getValue() || 0).toLocaleString()}
+          </Text>
+        ),
+      }),
+      // 7. Текущая цена
+      columnHelper.accessor('currentPrice', {
+        header: 'Цена',
+        size: 100,
+        cell: (info) => (
+          <Text fw={800} size="md" ta="right">
+            {info.getValue().toFixed(0)}
+          </Text>
+        ),
+      }),
+      // 8. Управление ценой (Важно!)
+      columnHelper.display({
+        id: 'control',
+        header: 'Новая цена',
+        size: 300,
+        cell: (info) => (
+          <PriceControlCell
+            product={info.row.original}
+            onUpdate={handleUpdatePrice}
+            onReset={(sku) => handleAction(sku, 'reset')}
+          />
+        ),
+      }),
+      // 9. Действия
+      columnHelper.display({
+        id: 'actions',
+        header: '',
+        size: 80,
+        cell: (info) => {
+          const p = info.row.original;
+          return (
+            <Group gap={4} justify="center">
+              {p.status === 'deferred' && (
+                <ActionIcon
+                  variant="light"
+                  color="green"
+                  onClick={() => handleAction(p.sku, 'reset')}
+                  title="Вернуть">
+                  <IconRotate2 size={18} />
+                </ActionIcon>
+              )}
+              <ActionIcon
+                variant={p.manual_flag ? 'filled' : 'subtle'}
+                color={p.manual_flag ? 'red' : 'gray'}
+                onClick={() => handleAction(p.sku, 'flag', !p.manual_flag)}
+                title="Флаг">
+                <IconFlag size={18} />
+              </ActionIcon>
+              {p.status === 'pending' && (
+                <ActionIcon
+                  variant="subtle"
+                  color="gray"
+                  onClick={() => handleAction(p.sku, 'defer')}
+                  title="Отложить">
+                  <IconEyeOff size={18} />
+                </ActionIcon>
+              )}
+            </Group>
+          );
+        },
+      }),
+    ],
+    [marginThreshold, handleUpdatePrice]
+  );
 
+  const table = useReactTable({
+    data,
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+  });
+
+  // --- RENDER ---
   return (
-    <div className="min-h-screen bg-gray-50 text-slate-800 font-sans">
-      {showHistory && <HistoryModal onClose={() => setShowHistory(false)} />}
+    <AppShell header={{ height: 70 }} padding="md" bg="gray.0">
+      <HistoryModal opened={openedHistory} onClose={closeHistory} />
 
-      <Header
-        marginThreshold={marginThreshold}
-        setMarginThreshold={setMarginThreshold}
-        onSeed={handleSeedDatabase}
-        onExport={handleExportBatch}
-        onHistory={() => setShowHistory(true)}
-      />
+      {/* ШАПКА */}
+      <AppShell.Header p="md">
+        <Group justify="space-between">
+          <Group>
+            <div
+              style={{
+                background: '#228be6',
+                padding: 8,
+                borderRadius: 8,
+                color: 'white',
+              }}>
+              <IconDatabase size={24} />
+            </div>
+            <div>
+              <Title order={4} lh={1}>
+                Repricing Manager
+              </Title>
+              <Text size="xs" c="dimmed" fw={500}>
+                React + Mantine
+              </Text>
+            </div>
+          </Group>
 
-      <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        <div className="flex flex-col md:flex-row gap-4 justify-between items-end md:items-center">
-          <div className="relative w-full md:w-96 group">
-            <Search
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-blue-500 transition-colors"
-              size={18}
-            />
-            <input
-              type="text"
+          <Group>
+            <Paper withBorder p={4} radius="md" bg="gray.0">
+              <Group gap={6}>
+                <Text size="xs" fw={700} tt="uppercase" c="dimmed" px={4}>
+                  Маржа %
+                </Text>
+                <NumberInput
+                  value={marginThreshold}
+                  onChange={(v) => setMarginThreshold(Number(v))}
+                  size="xs"
+                  w={60}
+                  hideControls
+                  styles={{ input: { textAlign: 'center', fontWeight: 700 } }}
+                />
+              </Group>
+            </Paper>
+
+            <ActionIcon
+              variant="default"
+              size="lg"
+              onClick={handleSeed}
+              title="Сброс БД"
+              radius="md">
+              <IconRefresh size={20} />
+            </ActionIcon>
+
+            <Button
+              variant="default"
+              leftSection={<IconHistory size={16} />}
+              onClick={openHistory}>
+              История
+            </Button>
+            <Button
+              color="green"
+              leftSection={<IconFileSpreadsheet size={16} />}
+              onClick={handleExport}>
+              Экспорт
+            </Button>
+          </Group>
+        </Group>
+      </AppShell.Header>
+
+      <AppShell.Main
+        style={{
+          height: 'calc(100vh - 70px)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '16px',
+        }}>
+        {/* ПАНЕЛЬ ФИЛЬТРОВ */}
+        <Container fluid w="100%" px={0}>
+          <Group justify="space-between" align="end">
+            <TextInput
               placeholder="Поиск по SKU или названию..."
+              leftSection={<IconSearch size={16} />}
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
                 setPage(1);
                 if (e.target.value) setFilterStatus('all');
               }}
-              className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none shadow-sm transition-all"
+              w={400}
             />
-          </div>
-          <div className="flex gap-2 bg-gray-100 p-1.5 rounded-lg border border-gray-200">
-            {(
-              Object.keys(STATUS_STYLES) as Array<keyof typeof STATUS_STYLES>
-            ).map((key) => (
-              <button
-                key={key}
-                onClick={() => {
-                  setFilterStatus(key);
-                  setPage(1);
-                }}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 border ${
-                  filterStatus === key
-                    ? STATUS_STYLES[key].active
-                    : STATUS_STYLES[key].base
-                }`}>
-                {STATUS_STYLES[key].label}
-              </button>
-            ))}
-          </div>
-        </div>
+            <SegmentedControl
+              value={filterStatus}
+              onChange={(val) => {
+                setFilterStatus(val);
+                setPage(1);
+              }}
+              data={[
+                { label: 'В работе', value: 'pending' },
+                { label: 'Готовы', value: 'approved' },
+                { label: 'Отложенные', value: 'deferred' },
+                { label: 'Архив', value: 'exported' },
+                { label: 'Все', value: 'all' },
+              ]}
+            />
+          </Group>
+        </Container>
 
-        <main className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden flex flex-col min-h-[500px]">
-          {loading ? (
-            <div className="flex flex-col items-center justify-center flex-1 text-gray-500">
-              <Loader2 className="animate-spin mb-3 text-blue-600" size={40} />
-              <span className="font-medium">Загрузка данных...</span>
-            </div>
-          ) : products.length === 0 ? (
-            <div className="flex flex-col items-center justify-center flex-1 text-gray-400 gap-4">
-              <span>Список пуст</span>
-              {filterStatus === 'pending' && !search && (
-                <button
-                  onClick={handleSeedDatabase}
-                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors shadow-md">
-                  Загрузить данные (Seed)
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="overflow-x-auto flex-1">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-gray-100/80 text-gray-600 text-xs uppercase tracking-wider sticky top-0 z-10 backdrop-blur-sm">
-                  <tr>
-                    <th className="p-4 w-16 text-center">Группа</th>
-                    <th className="p-4">Товар</th>
-                    <th className="p-4 w-24 text-right">Остаток</th>
-                    <th className="p-4 w-28 text-right">Закуп</th>
-                    <th className="p-4 w-24 text-center">Маржа %</th>
-                    <th className="p-4 w-28 text-right">Доход</th>
-                    <th className="p-4 w-28 text-right">Цена</th>
-                    <th className="p-4 w-96">Управление ценой</th>
-                    <th className="p-4 text-center">Действия</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {products.map((p) => {
-                    const marginPercent =
-                      ((p.currentPrice - p.costPrice) / p.costPrice) * 100;
-                    const isHighMargin = marginPercent > marginThreshold;
-                    const suggestions = PriceCalculator.calculateSuggestions(
-                      p.currentPrice
-                    );
-                    const { rowClass, borderClass } = getRowStyles(
-                      p,
-                      isHighMargin
-                    );
-                    let abcColor = 'bg-gray-100 text-gray-700';
-                    if (p.abcMargin === 'A')
-                      abcColor = 'bg-green-100 text-green-800';
-                    else if (p.abcMargin === 'B')
-                      abcColor = 'bg-yellow-100 text-yellow-800';
-                    else if (p.abcMargin === 'C')
-                      abcColor = 'bg-red-100 text-red-800';
+        {/* ОСНОВНАЯ ТАБЛИЦА */}
+        <Paper
+          shadow="xs"
+          radius="md"
+          withBorder
+          style={{
+            flex: 1,
+            position: 'relative',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          }}>
+          <LoadingOverlay
+            visible={loading}
+            zIndex={1000}
+            overlayProps={{ radius: 'sm', blur: 2 }}
+          />
+
+          <ScrollArea style={{ flex: 1 }}>
+            <Table stickyHeader highlightOnHover verticalSpacing="sm">
+              <Table.Thead bg="gray.0">
+                {table.getHeaderGroups().map((headerGroup) => (
+                  <Table.Tr key={headerGroup.id}>
+                    {headerGroup.headers.map((header) => (
+                      <Table.Th
+                        key={header.id}
+                        w={header.getSize()}
+                        style={{
+                          textTransform: 'uppercase',
+                          fontSize: '11px',
+                          color: '#868e96',
+                        }}>
+                        {flexRender(
+                          header.column.columnDef.header,
+                          header.getContext()
+                        )}
+                      </Table.Th>
+                    ))}
+                  </Table.Tr>
+                ))}
+              </Table.Thead>
+              <Table.Tbody>
+                {table.getRowModel().rows.length > 0 ? (
+                  table.getRowModel().rows.map((row) => {
+                    const p = row.original;
+                    // Подсветка строки
+                    let bg = undefined;
+                    if (p.status === 'approved')
+                      bg = 'var(--mantine-color-blue-0)';
+                    else if (p.status === 'deferred')
+                      bg = 'var(--mantine-color-gray-1)';
+                    else if (p.status === 'exported')
+                      bg = 'var(--mantine-color-grape-0)';
+                    else {
+                      const margin =
+                        ((p.currentPrice - p.costPrice) / p.costPrice) * 100;
+                      if (margin > marginThreshold)
+                        bg = 'var(--mantine-color-green-0)';
+                    }
 
                     return (
-                      <tr
-                        key={p.sku}
-                        className={`${rowClass} group ${borderClass}`}>
-                        <td className="p-4 text-center align-top">
-                          <Badge color={abcColor}>{p.abcMargin}</Badge>
-                          <div
-                            className="text-sm font-bold text-red-600 mt-2 cursor-help"
-                            title={`Потери в день: ${p.daily_loss?.toFixed(
-                              2
-                            )}`}>
-                            {p.daily_loss ? p.daily_loss.toFixed(2) : '0.00'}
-                          </div>
-                        </td>
-
-                        <td className="p-4 align-top">
-                          <div className="flex flex-col gap-1.5">
-                            <span
-                              className="font-semibold text-gray-900 leading-snug text-sm md:text-base line-clamp-2"
-                              title={p.name}>
-                              {p.name}
-                            </span>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-xs text-gray-500 font-mono bg-gray-100 px-1.5 rounded">
-                                {p.sku}
-                              </span>
-                              {p.status === 'approved' && (
-                                <span className="status-badge bg-blue-100 text-blue-700 border-blue-200">
-                                  <CheckCircle2 size={12} /> Готов
-                                </span>
-                              )}
-                              {p.status === 'deferred' && (
-                                <span className="status-badge bg-gray-200 text-gray-600 border-gray-300">
-                                  <EyeOff size={12} /> Отложен
-                                </span>
-                              )}
-                              {p.status === 'exported' && (
-                                <div className="flex items-center gap-2">
-                                  <span className="status-badge bg-purple-100 text-purple-700 border-purple-200">
-                                    <FileSpreadsheet size={12} /> Архив
-                                  </span>
-                                  {p.batch_id && (
-                                    <a
-                                      href={`/exports/batch_${p.batch_id}.xlsx`}
-                                      className="text-xs text-blue-600 hover:underline flex items-center gap-1"
-                                      title="Скачать исходный файл выгрузки">
-                                      <Download size={10} /> Файл
-                                    </a>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                            {p.manual_flag && (
-                              <span className="inline-flex items-center gap-1 text-xs text-red-600 font-bold bg-red-50 px-2 py-0.5 rounded w-fit">
-                                <Flag size={10} fill="currentColor" /> Проверить
-                              </span>
+                      <Table.Tr key={row.id} bg={bg}>
+                        {row.getVisibleCells().map((cell) => (
+                          <Table.Td key={cell.id}>
+                            {flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext()
                             )}
-                          </div>
-                        </td>
-
-                        <td className="p-4 text-right font-mono text-gray-600 align-top">
-                          {p.stock}
-                        </td>
-                        <td className="p-4 text-right font-mono text-gray-500 align-top">
-                          {p.costPrice.toFixed(0)}
-                        </td>
-                        <td className="p-4 text-center align-top">
-                          <div className="flex justify-center items-center gap-1 font-bold">
-                            <span
-                              className={
-                                marginPercent < 15
-                                  ? 'text-red-600'
-                                  : marginPercent > marginThreshold
-                                  ? 'text-green-600'
-                                  : 'text-gray-700'
-                              }>
-                              {marginPercent.toFixed(0)}%
-                            </span>
-                            {isHighMargin && (
-                              <ArrowUpRight
-                                size={14}
-                                className="text-green-500"
-                              />
-                            )}
-                          </div>
-                        </td>
-                        <td className="p-4 text-right font-mono text-gray-600 align-top">
-                          {Math.round(p.marginTotal || 0).toLocaleString()}
-                        </td>
-                        <td className="p-4 text-right font-bold text-gray-900 font-mono align-top text-lg">
-                          {p.currentPrice.toFixed(0)}
-                        </td>
-
-                        <td className="p-4 align-top">
-                          {p.status === 'approved' ||
-                          p.status === 'exported' ? (
-                            <div className="flex items-center gap-3">
-                              <div className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-lg shadow-sm">
-                                {p.new_price}
-                              </div>
-                              {p.status !== 'exported' && (
-                                <button
-                                  onClick={() => handleResetStatus(p.sku)}
-                                  className="p-2 text-gray-400 hover:text-red-600 bg-white border border-gray-200 hover:border-red-200 rounded-lg transition-all shadow-sm"
-                                  title="Отменить">
-                                  <Undo2 size={18} />
-                                </button>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="flex flex-col gap-2">
-                              <div className="flex gap-2 flex-wrap">
-                                {suggestions.map((price) => (
-                                  <button
-                                    key={price}
-                                    onClick={() =>
-                                      handleUpdatePrice(p.sku, price)
-                                    }
-                                    className="px-3 py-1.5 bg-white border-2 border-gray-200 hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 rounded-lg text-sm font-bold transition-all shadow-sm active:scale-95">
-                                    {price}
-                                  </button>
-                                ))}
-                              </div>
-                              <div className="flex gap-2 items-center">
-                                <input
-                                  type="number"
-                                  placeholder="Своя..."
-                                  className="w-24 px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter')
-                                      handleUpdatePrice(
-                                        p.sku,
-                                        Number(e.currentTarget.value)
-                                      );
-                                  }}
-                                />
-                                <button
-                                  onClick={() =>
-                                    handleUpdatePrice(p.sku, p.currentPrice)
-                                  }
-                                  className="text-xs text-gray-500 hover:text-gray-900 underline">
-                                  Старая
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </td>
-
-                        <td className="p-4 text-center align-top">
-                          <div className="flex justify-center gap-2">
-                            {p.status === 'deferred' && (
-                              <button
-                                onClick={() => handleResetStatus(p.sku)}
-                                className="action-btn text-green-600 hover:bg-green-50 hover:border-green-200"
-                                title="Вернуть">
-                                <Undo2 size={18} />
-                              </button>
-                            )}
-                            <button
-                              onClick={() => handleFlag(p.sku, p.manual_flag)}
-                              className={`action-btn ${
-                                p.manual_flag
-                                  ? 'text-red-500 bg-red-50 border-red-200'
-                                  : 'text-gray-400 hover:bg-gray-50'
-                              }`}
-                              title="Флаг">
-                              <Flag
-                                size={18}
-                                fill={p.manual_flag ? 'currentColor' : 'none'}
-                              />
-                            </button>
-                            {p.status === 'pending' && (
-                              <button
-                                onClick={() => handleDefer(p.sku)}
-                                className="action-btn text-gray-400 hover:text-gray-700 hover:bg-gray-100"
-                                title="Отложить">
-                                <EyeOff size={18} />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
+                          </Table.Td>
+                        ))}
+                      </Table.Tr>
                     );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <Pagination
-            page={page}
-            totalPages={Math.ceil(totalItems / LIMIT)}
-            totalItems={totalItems}
-            setPage={setPage}
-            limit={LIMIT}
-          />
-        </main>
-      </div>
+                  })
+                ) : (
+                  <Table.Tr>
+                    <Table.Td colSpan={columns.length}>
+                      <Box p="xl" ta="center" c="dimmed">
+                        Нет данных
+                      </Box>
+                    </Table.Td>
+                  </Table.Tr>
+                )}
+              </Table.Tbody>
+            </Table>
+          </ScrollArea>
 
-      {/* Global Styles for badge consistency */}
-      <style>{`
-        .status-badge { @apply text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase flex items-center gap-1 w-fit; }
-        .action-btn { @apply p-2 rounded-lg border border-transparent hover:border-gray-200 transition-all; }
-      `}</style>
-    </div>
+          {/* ПАГИНАЦИЯ ВНИЗУ ТАБЛИЦЫ */}
+          <Group
+            justify="space-between"
+            p="md"
+            bg="gray.0"
+            style={{ borderTop: '1px solid #dee2e6' }}>
+            <Text size="sm" c="dimmed">
+              Страница {page} из {Math.ceil(totalItems / LIMIT) || 1} (Всего:{' '}
+              {totalItems})
+            </Text>
+            <Pagination
+              total={Math.ceil(totalItems / LIMIT)}
+              value={page}
+              onChange={setPage}
+              size="sm"
+            />
+          </Group>
+        </Paper>
+      </AppShell.Main>
+    </AppShell>
   );
 }
