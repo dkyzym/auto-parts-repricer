@@ -2,12 +2,15 @@ import {
   AppShell,
   Group,
   LoadingOverlay,
+  Notification,
   Pagination,
   Paper,
   Text,
+  Transition,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { useCallback, useEffect, useState } from 'react';
+import { IconCheck } from '@tabler/icons-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { FilterBar } from './components/FilterBar';
 import { Header } from './components/Header';
@@ -26,10 +29,13 @@ export default function App() {
   const [page, setPage] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
 
+  // Для отслеживания достижения цели (21, 42...)
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const prevApprovedCountRef = useRef<number>(0);
+
   const [openedHistory, { open: openHistory, close: closeHistory }] =
     useDisclosure(false);
 
-  // Исправлено: инициализация из localStorage
   const [marginThreshold, setMarginThreshold] = useState<number>(() => {
     const saved = localStorage.getItem('marginThreshold');
     return saved ? Number(saved) : 30;
@@ -42,11 +48,32 @@ export default function App() {
     [marginThreshold]
   );
 
+  // Скрытие тоста через 3 секунды
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => setToastMessage(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
+
   // --- Helpers ---
   const fetchStats = useCallback(() => {
     fetch('/api/stats')
       .then((r) => r.json())
-      .then(setStats)
+      .then((newStats) => {
+        setStats(newStats);
+
+        // Логика Тоста: проверяем изменение количества approved
+        const approved = newStats.approved || 0;
+        const prev = prevApprovedCountRef.current;
+
+        // Если количество выросло и кратно 21
+        if (approved > prev && approved > 0 && approved % 21 === 0) {
+          setToastMessage(`Отличная работа! Готово товаров: ${approved}`);
+        }
+
+        prevApprovedCountRef.current = approved;
+      })
       .catch(console.error);
   }, []);
 
@@ -66,7 +93,6 @@ export default function App() {
       let list: Product[] = [];
       let total = 0;
 
-      // Исправлена логика проверки типов для устранения ошибки TS
       if (Array.isArray(json)) {
         list = json;
         total = json.length;
@@ -78,7 +104,6 @@ export default function App() {
       setData(list.map((p) => ({ ...p, manual_flag: Boolean(p.manual_flag) })));
       setTotalItems(total);
 
-      // Обновляем бейджи каждый раз, когда грузим данные
       fetchStats();
     } catch (e) {
       console.error(e);
@@ -95,7 +120,7 @@ export default function App() {
   // --- ACTIONS ---
 
   const handleUpdatePrice = async (sku: string, price: number) => {
-    // Optimistic: Удаляем из текущего вида, если мы в 'pending'
+    // Optimistic UI
     if (filterStatus === 'pending') {
       setData((prev) => prev.filter((p) => p.sku !== sku));
     } else {
@@ -123,12 +148,12 @@ export default function App() {
     action: 'defer' | 'flag' | 'reset',
     value?: boolean
   ) => {
-    // Optimistic Logic
+    // Optimistic UI
     setData((prev) => {
-      // "Отложить" (Defer) в списке Pending -> исчезает
+      // Defer из Pending -> скрываем
       if (action === 'defer' && filterStatus === 'pending')
         return prev.filter((p) => p.sku !== sku);
-      // "Вернуть" (Reset) в списке Approved/Deferred -> исчезает
+      // Reset из Approved/Deferred -> скрываем (так как они улетают в Pending)
       if (action === 'reset' && filterStatus !== 'all')
         return prev.filter((p) => p.sku !== sku);
 
@@ -268,6 +293,33 @@ export default function App() {
           </Group>
         </Paper>
       </AppShell.Main>
+
+      {/* TOAST NOTIFICATION */}
+      <Transition
+        mounted={!!toastMessage}
+        transition="slide-up"
+        duration={400}
+        timingFunction="ease">
+        {(styles) => (
+          <div
+            style={{
+              ...styles,
+              position: 'fixed',
+              bottom: 20,
+              right: 20,
+              zIndex: 1000,
+            }}>
+            <Notification
+              icon={<IconCheck size="1.1rem" />}
+              color="teal"
+              title="Достижение!"
+              onClose={() => setToastMessage(null)}
+              withCloseButton>
+              {toastMessage}
+            </Notification>
+          </div>
+        )}
+      </Transition>
     </AppShell>
   );
 }

@@ -2,13 +2,21 @@ import {
   ActionIcon,
   Badge,
   Box,
+  Button,
+  CopyButton,
   Group,
+  NumberInput,
+  rem,
   ScrollArea,
   Table,
   Text,
+  Tooltip,
 } from '@mantine/core';
 import {
   IconArrowUpRight,
+  IconCalculator,
+  IconCheck,
+  IconCopy,
   IconEyeOff,
   IconFlag,
   IconRotate2,
@@ -19,7 +27,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from '@tanstack/react-table';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Product } from '../types';
 import { PriceControlCell } from './PriceControlCell';
 
@@ -34,6 +42,94 @@ interface ProductTableProps {
   ) => void;
 }
 
+// --- Компонент Калькулятора Закупки (Изолированный) ---
+function CostCalculatorCell({ costPrice }: { costPrice: number }) {
+  const [baseCost, setBaseCost] = useState<string | number>('');
+  const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
+
+  const handleCalc = (percent: number) => {
+    const base = baseCost === '' ? costPrice : Number(baseCost);
+    // Расчет: Цена * (1 + %) -> Округление вверх до 10
+    const rawPrice = base * (1 + percent / 100);
+    const rounded = Math.ceil(rawPrice / 10) * 10;
+    setCalculatedPrice(rounded);
+  };
+
+  return (
+    <div className="flex flex-col gap-2 w-[120px]">
+      {/* Поле ввода закупа */}
+      <NumberInput
+        placeholder={`Закуп: ${costPrice.toFixed(0)}`}
+        value={baseCost}
+        onChange={setBaseCost}
+        size="xs"
+        hideControls
+        leftSection={<IconCalculator size={10} />}
+        styles={{
+          input: {
+            fontSize: '11px',
+            height: '24px',
+            paddingLeft: '24px',
+            paddingRight: '4px',
+          },
+        }}
+      />
+
+      {/* Кнопки процентов */}
+      <Group gap={4} grow>
+        {[56, 66, 76].map((pct) => (
+          <Button
+            key={pct}
+            size="compact-xs"
+            variant="default"
+            onClick={() => handleCalc(pct)}
+            styles={{
+              root: {
+                padding: 0,
+                fontSize: '10px',
+                height: '20px',
+                borderColor: '#dee2e6',
+              },
+            }}>
+            {pct}%
+          </Button>
+        ))}
+      </Group>
+
+      {/* Результат с копированием */}
+      {calculatedPrice !== null && (
+        <CopyButton value={String(calculatedPrice)} timeout={2000}>
+          {({ copied, copy }) => (
+            <Tooltip
+              label={copied ? 'Скопировано' : 'Скопировать цену'}
+              withArrow
+              position="bottom">
+              <Button
+                color={copied ? 'teal' : 'blue'}
+                variant="light"
+                fullWidth
+                size="compact-xs"
+                onClick={copy}
+                styles={{ root: { height: '22px' } }}>
+                {copied ? (
+                  <IconCheck style={{ width: rem(12) }} />
+                ) : (
+                  <Group gap={4}>
+                    <Text size="xs" fw={700}>
+                      {calculatedPrice}
+                    </Text>
+                    <IconCopy style={{ width: rem(10) }} />
+                  </Group>
+                )}
+              </Button>
+            </Tooltip>
+          )}
+        </CopyButton>
+      )}
+    </div>
+  );
+}
+
 export function ProductTable({
   data,
   marginThreshold,
@@ -44,9 +140,10 @@ export function ProductTable({
 
   const columns = useMemo(
     () => [
+      // 1. Группа
       columnHelper.accessor('abcMargin', {
         header: 'Группа',
-        size: 80,
+        size: 70,
         cell: (info) => {
           const val = info.getValue();
           const loss = info.row.original.daily_loss || 0;
@@ -66,14 +163,21 @@ export function ProductTable({
           );
         },
       }),
+      // 2. Товар
       columnHelper.accessor('name', {
         header: 'Товар',
-        size: 400,
+        size: 300,
         cell: (info) => {
           const p = info.row.original;
           return (
             <div>
-              <Text fw={600} size="sm" lh={1.3} mb={6}>
+              <Text
+                fw={600}
+                size="sm"
+                lh={1.3}
+                mb={6}
+                lineClamp={2}
+                title={p.name}>
                 {p.name}
               </Text>
               <Group gap={6}>
@@ -94,19 +198,23 @@ export function ProductTable({
           );
         },
       }),
+
+      // 3. Цена (Текущая)
       columnHelper.accessor('currentPrice', {
         header: 'Цена',
-        size: 100,
+        size: 90,
         cell: (info) => (
           <Text fw={800} size="md" ta="right">
             {info.getValue().toFixed(0)}
           </Text>
         ),
       }),
+
+      // 4. Новая цена (Управление)
       columnHelper.display({
         id: 'control',
         header: 'Новая цена',
-        size: 300,
+        size: 280,
         cell: (info) => (
           <PriceControlCell
             product={info.row.original}
@@ -115,6 +223,8 @@ export function ProductTable({
           />
         ),
       }),
+
+      // 5. Маржа %
       columnHelper.display({
         id: 'margin',
         header: 'Маржа',
@@ -142,34 +252,28 @@ export function ProductTable({
         },
       }),
 
-      columnHelper.accessor('stock', {
-        header: 'Ост.',
-        size: 70,
+      // 6. Зона Расчета (Калькулятор)
+      columnHelper.display({
+        id: 'calculator',
+        header: 'Расчет',
+        size: 140,
         cell: (info) => (
-          <Text size="sm" c="dimmed" ta="right">
-            {info.getValue()}
-          </Text>
-        ),
-      }),
-      columnHelper.accessor('costPrice', {
-        header: 'Закуп',
-        size: 90,
-        cell: (info) => (
-          <Text size="sm" c="dimmed" ta="right">
-            {info.getValue().toFixed(0)}
-          </Text>
+          <CostCalculatorCell costPrice={info.row.original.costPrice} />
         ),
       }),
 
+      // 7. Доход
       columnHelper.accessor('marginTotal', {
         header: 'Доход',
-        size: 100,
+        size: 90,
         cell: (info) => (
-          <Text size="sm" ta="right">
+          <Text size="sm" ta="right" c="dimmed">
             {Math.round(info.getValue() || 0).toLocaleString()}
           </Text>
         ),
       }),
+
+      // 8. Действия
       columnHelper.display({
         id: 'actions',
         header: '',
