@@ -9,7 +9,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ОПРЕДЕЛЕНИЕ ПУТЕЙ
+// --- ОПРЕДЕЛЕНИЕ ПУТЕЙ ---
 // Используем process.cwd() для надежной работы путей в любой среде
 const PROJECT_ROOT = process.cwd();
 const PUBLIC_DIR = path.join(PROJECT_ROOT, 'public');
@@ -27,7 +27,8 @@ if (!fs.existsSync(BACKUPS_DIR)) {
 // Раздача статики (для прямого доступа, если нужно)
 app.use('/exports', express.static(EXPORTS_DIR));
 
-// --- ВАЖНО: Настройка для поиска без учета регистра (Кириллица) ---
+// --- SQLITE CONFIG ---
+// Настройка для поиска без учета регистра (Кириллица)
 try {
   db.function('lower', { deterministic: true }, (text: unknown) => {
     if (typeof text === 'string') return text.toLowerCase();
@@ -52,6 +53,41 @@ const createBackup = async (prefix = 'manual') => {
 
 // --- API ROUTES ---
 
+// 0. STATS (НОВЫЙ: Статистика для бейджей на фронтенде)
+app.get('/api/stats', (req, res) => {
+  try {
+    const stats = db
+      .prepare(
+        `
+      SELECT status, COUNT(*) as count 
+      FROM products 
+      GROUP BY status
+    `
+      )
+      .all() as { status: string; count: number }[];
+
+    const result: Record<string, number> = {
+      pending: 0,
+      approved: 0,
+      deferred: 0,
+      exported: 0,
+      all: 0,
+    };
+
+    let total = 0;
+    stats.forEach((s) => {
+      result[s.status] = s.count;
+      total += s.count;
+    });
+    result.all = total;
+
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Stats failed' });
+  }
+});
+
 // 1. SEED (Загрузка данных с АВТО-БЭКАПОМ)
 app.post('/api/seed', async (req, res) => {
   console.log('--- SEED STARTED ---');
@@ -61,18 +97,12 @@ app.post('/api/seed', async (req, res) => {
     const backupName = await createBackup('before_seed');
     console.log(`Auto-backup created: ${backupName}`);
   } catch (bkpErr) {
-    console.error(
-      'Backup warning: Could not create backup before seed:',
-      bkpErr
-    );
-    // Не прерываем процесс, но логируем ошибку
+    console.error('Backup warning:', bkpErr);
   }
 
   // ШАГ 1: Чтение и парсинг файла
   try {
     const jsonPath = path.join(PROJECT_ROOT, 'products_initial.json');
-    console.log(`Reading file: ${jsonPath}`);
-
     if (!fs.existsSync(jsonPath)) {
       throw new Error(`Файл ${jsonPath} не найден`);
     }
@@ -82,17 +112,11 @@ app.post('/api/seed', async (req, res) => {
     try {
       rawData = JSON.parse(fileContent);
     } catch (e) {
-      throw new Error('Ошибка парсинга JSON. Проверьте валидность файла.');
+      throw new Error('Ошибка парсинга JSON.');
     }
 
     if (!Array.isArray(rawData)) {
       throw new Error('JSON должен быть массивом объектов');
-    }
-
-    console.log(`Found ${rawData.length} items in JSON.`);
-
-    if (rawData.length > 0) {
-      console.log('Sample item (first):', JSON.stringify(rawData[0], null, 2));
     }
 
     const insert = db.prepare(`
@@ -101,18 +125,16 @@ app.post('/api/seed', async (req, res) => {
     `);
 
     const insertMany = db.transaction((products: any[]) => {
-      console.log('Clearing old data...');
       db.prepare('DELETE FROM products').run();
 
       let inserted = 0;
       let skipped = 0;
-      let skipReasons: Record<string, number> = {};
 
       for (const rawItem of products) {
         // Нормализация ключей
         const p = {
-          sku: rawItem.sku || rawItem.SKU || rawItem.Sku,
-          name: rawItem.name || rawItem.Name || rawItem.NAME,
+          sku: rawItem.sku || rawItem.SKU,
+          name: rawItem.name || rawItem.Name,
           stock: rawItem.stock ?? rawItem.Stock ?? 0,
           costPrice: rawItem.costPrice || rawItem.CostPrice || 0,
           currentPrice: rawItem.currentPrice || rawItem.CurrentPrice || 0,
@@ -124,33 +146,22 @@ app.post('/api/seed', async (req, res) => {
 
         if (!p.sku || !p.name) {
           skipped++;
-          skipReasons['Missing SKU/Name'] =
-            (skipReasons['Missing SKU/Name'] || 0) + 1;
           continue;
         }
 
         // Фильтр: Пропускаем только если < 0 (товары с 0 загружаем)
         if (Number(p.stock) < 0) {
           skipped++;
-          skipReasons['Stock < 0'] = (skipReasons['Stock < 0'] || 0) + 1;
           continue;
         }
-
         if (p.sourceStatus === 'ABC_Only') {
           skipped++;
-          skipReasons['Source=ABC_Only'] =
-            (skipReasons['Source=ABC_Only'] || 0) + 1;
           continue;
         }
 
         insert.run(p);
         inserted++;
       }
-
-      console.log(
-        `Transaction finished. Inserted: ${inserted}, Skipped: ${skipped}`
-      );
-      console.log('Skip reasons:', skipReasons);
       return { inserted, skipped };
     });
 
@@ -180,7 +191,6 @@ app.get('/api/products', (req, res) => {
     params.push(status);
   }
 
-  // Поиск по частям слов
   if (q) {
     const terms = String(q).trim().split(/\s+/);
     for (const term of terms) {
@@ -228,7 +238,6 @@ app.get('/api/products', (req, res) => {
 app.patch('/api/products/:sku', (req, res) => {
   const { sku } = req.params;
   const { new_price, status, manual_flag } = req.body;
-
   const updates: string[] = [];
   const params: any[] = [];
 
@@ -244,7 +253,6 @@ app.patch('/api/products/:sku', (req, res) => {
     updates.push('manual_flag = ?');
     params.push(manual_flag ? 1 : 0);
   }
-
   params.push(sku);
 
   if (updates.length > 0) {
@@ -275,7 +283,6 @@ app.post('/api/batches/create', async (req, res) => {
       { header: 'Старая цена', key: 'currentPrice', width: 15 },
       { header: 'Новая цена', key: 'new_price', width: 15 },
     ];
-
     worksheet.addRows(products);
 
     const batchId = Date.now();
@@ -308,19 +315,14 @@ app.post('/api/batches/create', async (req, res) => {
   }
 });
 
-// 5. DOWNLOAD FILE (Надежное скачивание)
+// 5. DOWNLOAD FILE
 app.get('/api/download/:filename', (req, res) => {
   const filename = req.params.filename;
   const safeFilename = path.basename(filename);
   const filePath = path.join(EXPORTS_DIR, safeFilename);
 
   if (fs.existsSync(filePath)) {
-    res.download(filePath, safeFilename, (err) => {
-      if (err) {
-        console.error('Download error:', err);
-        if (!res.headersSent) res.status(500).send('Error downloading file');
-      }
-    });
+    res.download(filePath, safeFilename);
   } else {
     res.status(404).json({ error: 'File not found' });
   }
@@ -376,6 +378,6 @@ app.post('/api/backup', async (req, res) => {
 
 app.listen(3001, () => {
   console.log('Server running on http://localhost:3001');
-  console.log('Exports dir:', EXPORTS_DIR);
-  console.log('Backups dir:', BACKUPS_DIR);
+  console.log('Exports directory:', EXPORTS_DIR);
+  console.log('Backups directory:', BACKUPS_DIR);
 });
