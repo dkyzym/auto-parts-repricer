@@ -80,7 +80,7 @@ export function PriceControlCell({
         {suggestions.map((price) => (
           <Button
             key={price}
-            size="compact-sm"
+            size="compact-md"
             variant="default"
             onClick={() => onUpdate(product.sku, price)}
             styles={{

@@ -1,107 +1,45 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
 import {
+  ActionIcon,
   AppShell,
+  Badge,
+  Box,
+  Button,
   Container,
   Group,
-  Button,
-  TextInput,
-  NumberInput,
-  Table,
-  ScrollArea,
-  Badge,
-  Text,
-  ActionIcon,
-  Pagination,
   LoadingOverlay,
-  SegmentedControl,
-  Box,
-  Modal,
-  Title,
+  NumberInput,
+  Pagination,
   Paper,
+  ScrollArea,
+  SegmentedControl,
+  Table,
+  Text,
+  TextInput,
+  Title,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
-  useReactTable,
-  getCoreRowModel,
-  flexRender,
-  createColumnHelper,
-} from '@tanstack/react-table';
-import {
-  IconSearch,
-  IconDatabase,
-  IconFileSpreadsheet,
-  IconRefresh,
-  IconHistory,
-  IconFlag,
-  IconEyeOff,
   IconArrowUpRight,
+  IconDatabase,
+  IconEyeOff,
+  IconFileSpreadsheet,
+  IconFlag,
+  IconHistory,
+  IconRefresh,
   IconRotate2,
-  IconDownload,
+  IconSearch,
 } from '@tabler/icons-react';
+import {
+  createColumnHelper,
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+} from '@tanstack/react-table';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { Product, ApiResponse } from './types';
+import { HistoryModal } from './components/HistoryModal/HistoryModal';
 import { PriceControlCell } from './components/PriceControlCell';
-
-// --- Модальное окно истории ---
-const HistoryModal = ({
-  opened,
-  onClose,
-}: {
-  opened: boolean;
-  onClose: () => void;
-}) => {
-  const [batches, setBatches] = useState<any[]>([]);
-
-  useEffect(() => {
-    if (opened)
-      fetch('/api/batches')
-        .then((r) => r.json())
-        .then(setBatches);
-  }, [opened]);
-
-  return (
-    <Modal opened={opened} onClose={onClose} title="История выгрузок" size="lg">
-      <Table>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Дата</Table.Th>
-            <Table.Th>Файл</Table.Th>
-            <Table.Th></Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {batches.length === 0 ? (
-            <Table.Tr>
-              <Table.Td colSpan={3} align="center">
-                Нет истории
-              </Table.Td>
-            </Table.Tr>
-          ) : (
-            batches.map((b) => (
-              <Table.Tr key={b.id}>
-                <Table.Td>{new Date(b.date).toLocaleString('ru-RU')}</Table.Td>
-                <Table.Td style={{ fontFamily: 'monospace' }}>
-                  {b.name}
-                </Table.Td>
-                <Table.Td align="right">
-                  <Button
-                    component="a"
-                    href={b.url}
-                    download
-                    size="xs"
-                    variant="light"
-                    leftSection={<IconDownload size={14} />}>
-                    Скачать
-                  </Button>
-                </Table.Td>
-              </Table.Tr>
-            ))
-          )}
-        </Table.Tbody>
-      </Table>
-    </Modal>
-  );
-};
+import { ApiResponse, Product } from './types';
 
 export default function App() {
   // --- Состояние ---
@@ -284,7 +222,7 @@ export default function App() {
       }),
       // 2. Наименование (Широкая колонка)
       columnHelper.accessor('name', {
-        header: 'Товар',
+        header: 'Наименование',
         size: 400,
         cell: (info) => {
           const p = info.row.original;
@@ -324,24 +262,27 @@ export default function App() {
           );
         },
       }),
-      // 3. Остаток (второстепенно)
-      columnHelper.accessor('stock', {
-        header: 'Ост.',
-        size: 70,
+      // 3. Текущая цена
+      columnHelper.accessor('currentPrice', {
+        header: 'Цена',
+        size: 100,
         cell: (info) => (
-          <Text size="sm" c="dimmed" ta="right">
-            {info.getValue()}
+          <Text fw={800} size="md" ta="right">
+            {info.getValue().toFixed(0)}
           </Text>
         ),
       }),
-      // 4. Закуп (второстепенно)
-      columnHelper.accessor('costPrice', {
-        header: 'Закуп',
-        size: 90,
+      // 4. Управление ценой (Важно!)
+      columnHelper.display({
+        id: 'control',
+        header: 'Новая цена',
+        size: 300,
         cell: (info) => (
-          <Text size="sm" c="dimmed" ta="right">
-            {info.getValue().toFixed(0)}
-          </Text>
+          <PriceControlCell
+            product={info.row.original}
+            onUpdate={handleUpdatePrice}
+            onReset={(sku) => handleAction(sku, 'reset')}
+          />
         ),
       }),
       // 5. Маржа %
@@ -371,6 +312,7 @@ export default function App() {
           );
         },
       }),
+
       // 6. Доход
       columnHelper.accessor('marginTotal', {
         header: 'Доход',
@@ -381,29 +323,28 @@ export default function App() {
           </Text>
         ),
       }),
-      // 7. Текущая цена
-      columnHelper.accessor('currentPrice', {
-        header: 'Цена',
-        size: 100,
+
+      // 7. Остаток (второстепенно)
+      columnHelper.accessor('stock', {
+        header: 'Ост.',
+        size: 70,
         cell: (info) => (
-          <Text fw={800} size="md" ta="right">
+          <Text size="sm" c="dimmed" ta="right">
+            {info.getValue()}
+          </Text>
+        ),
+      }),
+      // 8. Закуп (второстепенно)
+      columnHelper.accessor('costPrice', {
+        header: 'Закуп',
+        size: 90,
+        cell: (info) => (
+          <Text size="sm" c="dimmed" ta="right">
             {info.getValue().toFixed(0)}
           </Text>
         ),
       }),
-      // 8. Управление ценой (Важно!)
-      columnHelper.display({
-        id: 'control',
-        header: 'Новая цена',
-        size: 300,
-        cell: (info) => (
-          <PriceControlCell
-            product={info.row.original}
-            onUpdate={handleUpdatePrice}
-            onReset={(sku) => handleAction(sku, 'reset')}
-          />
-        ),
-      }),
+
       // 9. Действия
       columnHelper.display({
         id: 'actions',

@@ -10,44 +10,90 @@ app.use(cors());
 app.use(express.json());
 
 // ОПРЕДЕЛЕНИЕ ПУТЕЙ
+// Используем process.cwd() для надежной работы путей в любой среде
 const PROJECT_ROOT = process.cwd();
 const PUBLIC_DIR = path.join(PROJECT_ROOT, 'public');
 const EXPORTS_DIR = path.join(PUBLIC_DIR, 'exports');
+const BACKUPS_DIR = path.join(PROJECT_ROOT, 'backups'); // Папка для бэкапов
 
-// Гарантируем, что папка для экспорта существует
+// Гарантируем существование папок
 if (!fs.existsSync(EXPORTS_DIR)) {
   fs.mkdirSync(EXPORTS_DIR, { recursive: true });
 }
+if (!fs.existsSync(BACKUPS_DIR)) {
+  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+}
 
-// Раздача статики
+// Раздача статики (для прямого доступа, если нужно)
 app.use('/exports', express.static(EXPORTS_DIR));
 
 // --- ВАЖНО: Настройка для поиска без учета регистра (Кириллица) ---
-// SQLite по умолчанию не умеет делать lower() для русских букв.
-// Мы регистрируем свою JS-функцию внутри SQL движка.
 try {
   db.function('lower', { deterministic: true }, (text: unknown) => {
     if (typeof text === 'string') return text.toLowerCase();
     return text;
   });
 } catch (err) {
-  // Функция может быть уже объявлена, игнорируем ошибку
   console.log('SQLite function registration skipped or failed:', err);
 }
 
 initDb();
 
+// --- HELPER: СОЗДАНИЕ БЭКАПА ---
+const createBackup = async (prefix = 'manual') => {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `backup_${prefix}_${timestamp}.sqlite`;
+  const dest = path.join(BACKUPS_DIR, filename);
+
+  // better-sqlite3 имеет встроенный метод .backup(), который работает "на лету"
+  await db.backup(dest);
+  return filename;
+};
+
 // --- API ROUTES ---
 
-// 1. SEED (Загрузка данных)
-app.post('/api/seed', (req, res) => {
+// 1. SEED (Загрузка данных с АВТО-БЭКАПОМ)
+app.post('/api/seed', async (req, res) => {
+  console.log('--- SEED STARTED ---');
+
+  // ШАГ 0: Создаем бэкап текущей базы перед удалением
+  try {
+    const backupName = await createBackup('before_seed');
+    console.log(`Auto-backup created: ${backupName}`);
+  } catch (bkpErr) {
+    console.error(
+      'Backup warning: Could not create backup before seed:',
+      bkpErr
+    );
+    // Не прерываем процесс, но логируем ошибку
+  }
+
+  // ШАГ 1: Чтение и парсинг файла
   try {
     const jsonPath = path.join(PROJECT_ROOT, 'products_initial.json');
+    console.log(`Reading file: ${jsonPath}`);
+
     if (!fs.existsSync(jsonPath)) {
       throw new Error(`Файл ${jsonPath} не найден`);
     }
 
-    const rawData = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+    const fileContent = fs.readFileSync(jsonPath, 'utf-8');
+    let rawData;
+    try {
+      rawData = JSON.parse(fileContent);
+    } catch (e) {
+      throw new Error('Ошибка парсинга JSON. Проверьте валидность файла.');
+    }
+
+    if (!Array.isArray(rawData)) {
+      throw new Error('JSON должен быть массивом объектов');
+    }
+
+    console.log(`Found ${rawData.length} items in JSON.`);
+
+    if (rawData.length > 0) {
+      console.log('Sample item (first):', JSON.stringify(rawData[0], null, 2));
+    }
 
     const insert = db.prepare(`
       INSERT OR REPLACE INTO products (sku, name, stock, costPrice, currentPrice, salesQty, abcMargin, marginTotal, sourceStatus)
@@ -55,15 +101,64 @@ app.post('/api/seed', (req, res) => {
     `);
 
     const insertMany = db.transaction((products: any[]) => {
+      console.log('Clearing old data...');
       db.prepare('DELETE FROM products').run();
-      for (const p of products) {
-        if (p.stock <= 0 || p.sourceStatus === 'ABC_Only') continue;
+
+      let inserted = 0;
+      let skipped = 0;
+      let skipReasons: Record<string, number> = {};
+
+      for (const rawItem of products) {
+        // Нормализация ключей
+        const p = {
+          sku: rawItem.sku || rawItem.SKU || rawItem.Sku,
+          name: rawItem.name || rawItem.Name || rawItem.NAME,
+          stock: rawItem.stock ?? rawItem.Stock ?? 0,
+          costPrice: rawItem.costPrice || rawItem.CostPrice || 0,
+          currentPrice: rawItem.currentPrice || rawItem.CurrentPrice || 0,
+          salesQty: rawItem.salesQty || rawItem.SalesQty || 0,
+          abcMargin: rawItem.abcMargin || rawItem.AbcMargin || 'N',
+          marginTotal: rawItem.marginTotal || rawItem.MarginTotal || 0,
+          sourceStatus: rawItem.sourceStatus || rawItem.SourceStatus || '',
+        };
+
+        if (!p.sku || !p.name) {
+          skipped++;
+          skipReasons['Missing SKU/Name'] =
+            (skipReasons['Missing SKU/Name'] || 0) + 1;
+          continue;
+        }
+
+        // Фильтр: Пропускаем только если < 0 (товары с 0 загружаем)
+        if (Number(p.stock) < 0) {
+          skipped++;
+          skipReasons['Stock < 0'] = (skipReasons['Stock < 0'] || 0) + 1;
+          continue;
+        }
+
+        if (p.sourceStatus === 'ABC_Only') {
+          skipped++;
+          skipReasons['Source=ABC_Only'] =
+            (skipReasons['Source=ABC_Only'] || 0) + 1;
+          continue;
+        }
+
         insert.run(p);
+        inserted++;
       }
+
+      console.log(
+        `Transaction finished. Inserted: ${inserted}, Skipped: ${skipped}`
+      );
+      console.log('Skip reasons:', skipReasons);
+      return { inserted, skipped };
     });
 
-    insertMany(rawData);
-    res.json({ success: true, message: 'Database seeded successfully' });
+    const result = insertMany(rawData);
+    res.json({
+      success: true,
+      message: `База данных обновлена. Загружено: ${result.inserted}, Пропущено: ${result.skipped}`,
+    });
   } catch (err) {
     console.error('Seed Error:', err);
     res
@@ -72,7 +167,7 @@ app.post('/api/seed', (req, res) => {
   }
 });
 
-// 2. GET PRODUCTS (С пагинацией и мульти-словным поиском)
+// 2. GET PRODUCTS (С пагинацией и поиском)
 app.get('/api/products', (req, res) => {
   const { page = 1, limit = 50, status = 'pending', q = '' } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
@@ -85,10 +180,9 @@ app.get('/api/products', (req, res) => {
     params.push(status);
   }
 
-  // Обновленная логика поиска: разбиваем запрос на части (слова)
-  // Каждая часть должна присутствовать либо в SKU, либо в Названии
+  // Поиск по частям слов
   if (q) {
-    const terms = String(q).trim().split(/\s+/); // Разбиваем по пробелам
+    const terms = String(q).trim().split(/\s+/);
     for (const term of terms) {
       if (term) {
         whereClause += ` AND (LOWER(sku) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?))`;
@@ -97,7 +191,6 @@ app.get('/api/products', (req, res) => {
     }
   }
 
-  // SQL для данных
   const dataSql = `
     SELECT *, 
     (currentPrice * 0.05 * (salesQty / 365.0)) as daily_loss 
@@ -109,7 +202,6 @@ app.get('/api/products', (req, res) => {
     LIMIT ? OFFSET ?
   `;
 
-  // SQL для подсчета общего количества
   const countSql = `SELECT COUNT(*) as total FROM products ${whereClause}`;
 
   try {
@@ -216,7 +308,7 @@ app.post('/api/batches/create', async (req, res) => {
   }
 });
 
-// 5. DOWNLOAD FILE
+// 5. DOWNLOAD FILE (Надежное скачивание)
 app.get('/api/download/:filename', (req, res) => {
   const filename = req.params.filename;
   const safeFilename = path.basename(filename);
@@ -265,7 +357,25 @@ app.get('/api/batches', (req, res) => {
   }
 });
 
+// 7. MANUAL BACKUP (Ручное создание бэкапа)
+app.post('/api/backup', async (req, res) => {
+  try {
+    const filename = await createBackup('user_request');
+    res.json({
+      success: true,
+      message: `Бэкап успешно создан: ${filename}`,
+      filename,
+    });
+  } catch (err) {
+    console.error('Backup error:', err);
+    res
+      .status(500)
+      .json({ error: 'Backup failed', details: (err as Error).message });
+  }
+});
+
 app.listen(3001, () => {
   console.log('Server running on http://localhost:3001');
-  console.log('Exports directory:', EXPORTS_DIR);
+  console.log('Exports dir:', EXPORTS_DIR);
+  console.log('Backups dir:', BACKUPS_DIR);
 });
